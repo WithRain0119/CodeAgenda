@@ -1,5 +1,6 @@
 .claude/
 static/backgrounds/*
+!static/backgrounds/.gitkeep
 __pycache__/
 records.db
 CLAUDE.md
