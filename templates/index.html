@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>刷题记录</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="page">
+    <div class="topbar">
+      <h1 class="page-title">刷题记录</h1>
+      <button id="btn-settings" type="button">设置</button>
+    </div>
+
+    <section class="stats">
+      <div class="stat-card">
+        <div class="stat-value" id="stat-total">0</div>
+        <div class="stat-label">累计刷题（题）</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-best">0</div>
+        <div class="stat-label">单日最高（题）</div>
+        <div class="stat-sub" id="stat-best-date">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-streak">0</div>
+        <div class="stat-label">每日一题连续打卡天数(天)</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value" id="stat-problem-streak">0</div>
+        <div class="stat-label">连续刷题（天）</div>
+        <div class="stat-sub">今天起刷题数&gt;0 连续</div>
+      </div>
+    </section>
+
+    <section class="card today-bar">
+      <div class="today-info">
+        <span class="today-label">今日刷题</span>
+        <span class="today-count" id="today-count">0</span>
+        <span class="today-unit">题</span>
+      </div>
+      <div class="today-actions">
+        <button id="btn-daily-toggle" type="button" title="点击切换今天是否完成每日一题">每日一题</button>
+        <button id="btn-count-plus" type="button">过题数 +1</button>
+      </div>
+    </section>
+
+    <section class="card heatmap-card">
+      <div class="card-header">
+        <h2>刷题足迹</h2>
+        <ul class="legend">
+          <li><i class="dot" style="background:#9be9a8"></i>少</li>
+          <li><i class="dot" style="background:#40c463"></i>中</li>
+          <li><i class="dot" style="background:#30a14e"></i>多</li>
+          <li><i class="dot" style="background:#216e39"></i>多更多</li>
+        </ul>
+      </div>
+      <div class="heatmap-scroll">
+        <div class="heatmap-inner">
+          <div class="heatmap-pager">
+            <button id="btn-prev" class="pager-btn" type="button" title="上一年">‹</button>
+            <span class="pager-year" id="heatmap-year">--</span>
+            <button id="btn-next" class="pager-btn" type="button" title="下一年">›</button>
+          </div>
+          <div id="heatmap"></div>
+        </div>
+      </div>
+      <p class="heatmap-hint" id="heatmap-hint" hidden>点击任意日期方块记录当天刷题数量（可翻到以前年份补记）</p>
+    </section>
+
+    <section class="card heatmap-card">
+      <div class="card-header">
+        <h2>每日一题足迹</h2>
+        <ul class="legend">
+          <li><i class="dot" style="background:#2da44e"></i>已完成</li>
+          <li><i class="dot" style="background:#ebedf0"></i>未完成</li>
+        </ul>
+      </div>
+      <div class="heatmap-scroll">
+        <div class="heatmap-inner">
+          <div class="heatmap-pager">
+            <button id="btn-prev-d" class="pager-btn" type="button" title="上一年">‹</button>
+            <span class="pager-year" id="heatmap-year-d">--</span>
+            <button id="btn-next-d" class="pager-btn" type="button" title="下一年">›</button>
+          </div>
+          <div id="heatmap-daily"></div>
+        </div>
+      </div>
+      <p class="heatmap-hint" id="heatmap-hint-d" hidden>点击方块切换当天是否完成每日一题（可翻到以前年份补记）</p>
+    </section>
+
+    <div class="bottom-actions">
+      <button id="btn-export" type="button">导出备份</button>
+      <button id="btn-import" type="button">导入数据</button>
+      <input type="file" id="import-file" accept=".json,application/json" hidden>
+    </div>
+  </div>
+
+  <!-- 模态框：编辑某一天 -->
+  <div class="modal-mask" id="modal-mask">
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-date" id="modal-date">--</div>
+
+      <label class="field">
+        <span class="field-label">普通刷题数量</span>
+        <input class="input" type="number" id="modal-count" min="0" value="0">
+      </label>
+
+      <div class="modal-actions">
+        <button id="btn-cancel" type="button">取消</button>
+        <button class="primary" id="btn-save" type="button">保存</button>
+      </div>
+
+      <div class="modal-note">普通刷题数量填 0 = 当天未刷普通题；不影响该天每日一题状态</div>
+    </div>
+  </div>
+
+  <!-- 模态框：编辑某一天是否完成每日一题 -->
+  <div class="modal-mask" id="modal-mask-daily">
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-date" id="modal-date-d">--</div>
+
+      <label class="switch-line">
+        <span class="switch-label">完成牛客每日一题</span>
+        <input type="checkbox" id="modal-daily">
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+
+      <div class="modal-actions">
+        <button id="btn-cancel-d" type="button">取消</button>
+        <button class="primary" id="btn-save-d" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置界面：左侧分栏 + 右侧内容 -->
+  <div class="modal-mask" id="settings-mask">
+    <div class="settings" role="dialog" aria-modal="true" aria-label="设置">
+      <aside class="settings-nav" id="settings-nav">
+        <button class="settings-nav-item is-active" type="button" data-target="panel-general">通用</button>
+        <button class="settings-nav-item" type="button" data-target="panel-nowcoder">牛客账号设置</button>
+      </aside>
+      <div class="settings-body">
+        <section class="settings-panel" id="panel-nowcoder">
+          <h3 class="settings-title">牛客账号设置</h3>
+          <label class="field">
+            <span class="field-label">账号</span>
+            <input class="input" type="text" id="nc-account" autocomplete="username">
+          </label>
+          <label class="field">
+            <span class="field-label">密码</span>
+            <input class="input" type="password" id="nc-password" autocomplete="current-password">
+          </label>
+          <div class="modal-actions">
+            <button class="primary" id="btn-save-settings" type="button">保存</button>
+            <button id="btn-cancel-settings" type="button">取消</button>
+          </div>
+        </section>
+
+        <section class="settings-panel is-active" id="panel-general">
+          <h3 class="settings-title">通用</h3>
+          <div class="bg-setting">
+            <h4 class="settings-subtitle">设置背景图片</h4>
+            <div class="bg-preview" id="bg-preview"><span class="bg-placeholder">当前为默认白色背景</span></div>
+            <p class="bg-hint">选择本地图片后立即作为页面背景并自动保存；再次进入仍是该背景。</p>
+            <div class="bg-actions">
+              <button class="primary" id="btn-choose-bg" type="button">选择图片</button>
+              <button id="btn-remove-bg" type="button">恢复默认</button>
+            </div>
+            <p class="bg-status" id="bg-status" hidden></p>
+            <input type="file" id="bg-file" accept="image/*" hidden>
+          </div>
+        </section>
+      </div>
+      <button class="settings-close" id="btn-close-settings" type="button" aria-label="关闭">×</button>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

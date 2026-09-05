@@ -1,0 +1,6 @@
+.claude/
+static/backgrounds/*
+__pycache__/
+records.db
+CLAUDE.md
+prompt.md
