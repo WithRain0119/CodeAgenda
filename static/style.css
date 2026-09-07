@@ -29,6 +29,19 @@ h1.page-title {
   gap: 12px;
 }
 
+.topbar-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.today-date {
+  color: #57606a;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
 #btn-settings { font-size: 13px; padding: 5px 12px; }
 
 /* ---------- 三张统计卡 ---------- */

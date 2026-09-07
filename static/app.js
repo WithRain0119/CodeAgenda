@@ -44,6 +44,10 @@ var curYear = null;         // 当前展示的年份
 var today = todayMid();
 var todayStr = formatDate(today);
 
+/* ===== 顶栏：显示今天是几月几号 ===== */
+document.getElementById('today-date').textContent =
+  today.getFullYear() + '年' + (today.getMonth() + 1) + '月' + today.getDate() + '日';
+
 /* ===== 年份翻页 ===== */
 var MIN_YEAR = 2000; // 往回翻页的下限：没有数据也可翻到空白年份补记；有更早记录则以记录年份为准
 var HEATMAP_DAILY_COL = '#2da44e'; // 每日一题足迹：已完成当天的绿色
