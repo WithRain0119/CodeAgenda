@@ -43,6 +43,38 @@ var recordsMap = new Map(); // date -> record（跨所有年份，用于按年�
 var curYear = null;         // 当前展示的年份
 var today = todayMid();
 var todayStr = formatDate(today);
+var submissionsMap = new Map();
+var selectedPassedDate = todayStr;
+
+function renderPassedList(ds) {
+  selectedPassedDate = ds || todayStr;
+  var list = document.getElementById('passed-list');
+  var empty = document.getElementById('passed-empty');
+  var dateEl = document.getElementById('passed-date');
+  if (!list || !empty || !dateEl) return;
+  dateEl.textContent = selectedPassedDate;
+  list.textContent = '';
+  var rows = submissionsMap.get(selectedPassedDate) || [];
+  empty.hidden = rows.length > 0;
+  rows.forEach(function (item) {
+    var row = document.createElement('div');
+    row.className = 'passed-item';
+    var time = document.createElement('time');
+    time.textContent = item.created_at ? item.created_at.slice(11, 19) : '--:--:--';
+    var raw = String(item.problem_key || '');
+    var split = raw.indexOf('|');
+    var target = split >= 0 ? raw.slice(0, split) : raw;
+    var title = split >= 0 ? raw.slice(split + 1) : raw;
+    var link = document.createElement('a');
+    link.href = /^https?:\/\//i.test(target) ? target : 'https://' + target;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = title || target;
+    row.appendChild(time);
+    row.appendChild(link);
+    list.appendChild(row);
+  });
+}
 
 /* ===== 顶栏：显示今天是几月几号 ===== */
 document.getElementById('today-date').textContent =
@@ -141,7 +173,7 @@ function renderHeatmapGrid(p) {
       (function (key, md) {
         cell.addEventListener('click', function () {
           if (md === 'daily') openDailyModal(key);
-          else openCountModal(key);
+          else { openCountModal(key); renderPassedList(key); }
         });
       })(ds, p.mode);
       b.appendChild(cell);
@@ -228,8 +260,8 @@ btnCountPlus.addEventListener('click', function () {
 
 function refresh() {
   return Promise.all([
-    fetch('/api/records').then(function (r) { return r.json(); }),
-    fetch('/api/summary').then(function (r) { return r.json(); })
+    fetch('/api/records', { cache: 'no-store' }).then(function (r) { if (!r.ok) throw new Error('records HTTP ' + r.status); return r.json(); }),
+    fetch('/api/summary', { cache: 'no-store' }).then(function (r) { if (!r.ok) throw new Error('summary HTTP ' + r.status); return r.json(); })
   ]).then(function (arr) {
     var recs = arr[0].records;
     var sum = arr[1];
@@ -247,6 +279,22 @@ function refresh() {
     renderSummary(sum);
     renderHeatmaps();
     updateTodayBar();
+    renderPassedList(selectedPassedDate || todayStr);
+    return fetch('/api/submissions', { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('submissions HTTP ' + r.status);
+      return r.json();
+    }).then(function (data) {
+      submissionsMap = new Map();
+      (data.submissions || []).forEach(function (item) {
+        if (!submissionsMap.has(item.date)) submissionsMap.set(item.date, []);
+        submissionsMap.get(item.date).push(item);
+      });
+      renderPassedList(selectedPassedDate || todayStr);
+    }).catch(function (error) {
+      console.error('[CodeAgenda] 读取已通过题目失败:', error);
+      submissionsMap = new Map();
+      renderPassedList(selectedPassedDate || todayStr);
+    });
   });
 }
 
@@ -559,3 +607,7 @@ btnRemoveBg.addEventListener('click', function () {
 /* ===== 启动 ===== */
 loadAppearance();
 refresh().catch(function () { /* 网络失败时静默，避免未处理拒绝 */ });
+// Tampermonkey 在牛客页面写入数据库后，主页面通过轻量轮询自动显示最新题目。
+setInterval(function () {
+  refresh().catch(function () { /* 后端暂时不可用时保留当前界面 */ });
+}, 5000);

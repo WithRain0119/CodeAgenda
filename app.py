@@ -10,7 +10,10 @@ from datetime import datetime, date, timedelta
 from flask import Flask, jsonify, request, render_template, g
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'records.db')
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+RECORDS_DB_PATH = os.path.join(DATA_DIR, 'records.db')
+DETAILS_DB_PATH = os.path.join(DATA_DIR, 'details.db')
+LEGACY_DB_PATH = os.path.join(BASE_DIR, 'records.db')
 BG_DIR = os.path.join(BASE_DIR, 'static', 'backgrounds')
 BG_URL_PREFIX = '/static/backgrounds/'
 ALLOWED_IMG_EXT = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.avif')
@@ -28,9 +31,16 @@ def now_str():
 def get_db():
     """每请求独立连接。"""
     if 'db' not in g:
-        g.db = sqlite3.connect(DB_PATH)
+        g.db = sqlite3.connect(RECORDS_DB_PATH)
         g.db.row_factory = sqlite3.Row
     return g.db
+
+
+def get_details_db():
+    if 'details_db' not in g:
+        g.details_db = sqlite3.connect(DETAILS_DB_PATH)
+        g.details_db.row_factory = sqlite3.Row
+    return g.details_db
 
 
 @app.teardown_appcontext
@@ -38,11 +48,15 @@ def close_db(exc):
     db = g.pop('db', None)
     if db is not None:
         db.close()
+    details_db = g.pop('details_db', None)
+    if details_db is not None:
+        details_db.close()
 
 
 def init_db():
     """启动时建表，若已存在不重建。"""
-    conn = sqlite3.connect(DB_PATH)
+    os.makedirs(DATA_DIR, exist_ok=True)
+    conn = sqlite3.connect(RECORDS_DB_PATH)
     try:
         conn.execute('''
             CREATE TABLE IF NOT EXISTS records (
@@ -54,12 +68,30 @@ def init_db():
                 updated_at TEXT
             )
         ''')
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS settings (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-        ''')
+        details = sqlite3.connect(DETAILS_DB_PATH)
+        details.execute('''CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, date TEXT NOT NULL, problem_key TEXT NOT NULL, created_at TEXT, UNIQUE(date, problem_key))''')
+        details.commit()
+        details.close()
+        conn.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)''')
+        if os.path.isfile(LEGACY_DB_PATH) and os.path.abspath(LEGACY_DB_PATH) != os.path.abspath(RECORDS_DB_PATH):
+            conn.execute('ATTACH DATABASE ? AS legacy', (LEGACY_DB_PATH,))
+            tables = {r[0] for r in conn.execute("SELECT name FROM legacy.sqlite_master WHERE type='table'")}
+            if 'records' in tables:
+                conn.execute('INSERT OR IGNORE INTO records SELECT * FROM legacy.records')
+            if 'settings' in tables:
+                conn.execute('INSERT OR IGNORE INTO settings SELECT * FROM legacy.settings')
+            conn.commit()
+            conn.execute('DETACH DATABASE legacy')
+            legacy_details = sqlite3.connect(LEGACY_DB_PATH)
+            if 'submissions' in tables:
+                details = sqlite3.connect(DETAILS_DB_PATH)
+                details.execute('''CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, date TEXT NOT NULL, problem_key TEXT NOT NULL, created_at TEXT, UNIQUE(date, problem_key))''')
+                details.execute('ATTACH DATABASE ? AS legacy', (LEGACY_DB_PATH,))
+                details.execute('INSERT OR IGNORE INTO submissions SELECT * FROM legacy.submissions')
+                details.commit()
+                details.execute('DETACH DATABASE legacy')
+                details.close()
+            legacy_details.close()
         conn.commit()
     finally:
         conn.close()
@@ -183,6 +215,55 @@ def save_record():
     return jsonify({'record': upsert_record(date_str, count, is_daily)})
 
 
+@app.route('/api/submissions', methods=['POST'])
+def save_submission():
+    """Record one accepted problem; the unique key makes retries idempotent."""
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({'error': '请求体必须为 JSON 对象'}), 400
+    date_str = validate_date(body.get('date'))
+    problem_key = body.get('problem_key')
+    if date_str is None or not isinstance(problem_key, str) or not problem_key.strip():
+        return jsonify({'error': 'date 或 problem_key 无效'}), 400
+    problem_key = problem_key.strip()[:500]
+
+    db = get_details_db()
+    now = now_str()
+    cursor = db.execute(
+        'INSERT OR IGNORE INTO submissions (id, date, problem_key, created_at) VALUES (?, ?, ?, ?)',
+        (uuid.uuid4().hex, date_str, problem_key, now),
+    )
+    if cursor.rowcount == 0:
+        db.commit()
+        row = get_db().execute('SELECT count, is_daily FROM records WHERE date = ?', (date_str,)).fetchone()
+        return jsonify({'duplicate': True, 'record': row_to_int_dict(row) if row else None})
+
+    row = get_db().execute('SELECT count, is_daily FROM records WHERE date = ?', (date_str,)).fetchone()
+    count = (int(row['count']) if row else 0) + 1
+    is_daily = int(row['is_daily']) if row else 0
+    record = upsert_record(date_str, count, is_daily)
+    db.commit()
+    return jsonify({'duplicate': False, 'problem_key': problem_key, 'record': record})
+
+
+@app.route('/api/submissions', methods=['GET'])
+def list_submissions():
+    date_str = request.args.get('date')
+    if date_str is not None and validate_date(date_str) is None:
+        return jsonify({'error': 'date 必须是合法 YYYY-MM-DD'}), 400
+    db = get_details_db()
+    if date_str:
+        rows = db.execute(
+            'SELECT date, problem_key, created_at FROM submissions WHERE date = ? ORDER BY created_at ASC',
+            (date_str,),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            'SELECT date, problem_key, created_at FROM submissions ORDER BY date ASC, created_at ASC'
+        ).fetchall()
+    return jsonify({'submissions': [dict(r) for r in rows]})
+
+
 @app.route('/api/summary', methods=['GET'])
 def summary():
     db = get_db()
@@ -235,9 +316,13 @@ def summary():
 def export_records():
     db = get_db()
     rows = db.execute('SELECT * FROM records ORDER BY date ASC').fetchall()
+    submissions = get_details_db().execute(
+        'SELECT date, problem_key, created_at FROM submissions ORDER BY date ASC, created_at ASC'
+    ).fetchall()
     return jsonify({
         'exported_at': now_str(),
         'records': [row_to_int_dict(r) for r in rows],
+        'submissions': [dict(r) for r in submissions],
     })
 
 
@@ -246,14 +331,17 @@ def import_records():
     body = request.get_json(silent=True)
     if isinstance(body, dict) and 'records' in body:
         records = body['records']
+        submissions = body.get('submissions', [])
     elif isinstance(body, list):
         records = body
+        submissions = []
     else:
         return jsonify({'error': '请求体必须为数组或 {"records": [...]}'}), 400
     if not isinstance(records, list):
         return jsonify({'error': 'records 必须为数组'}), 400
 
     db = get_db()
+    details_db = get_details_db()
     try:
         now = now_str()
         n = 0
@@ -279,9 +367,22 @@ def import_records():
                     updated_at = excluded.updated_at
             ''', (uuid.uuid4().hex, date_str, count, is_daily, now, now))
             n += 1
+        for item in submissions if isinstance(submissions, list) else []:
+            if not isinstance(item, dict):
+                continue
+            date_str = validate_date(item.get('date'))
+            problem_key = item.get('problem_key')
+            if date_str is None or not isinstance(problem_key, str) or not problem_key.strip():
+                continue
+            details_db.execute(
+                'INSERT OR IGNORE INTO submissions (id, date, problem_key, created_at) VALUES (?, ?, ?, ?)',
+                (uuid.uuid4().hex, date_str, problem_key.strip()[:500], item.get('created_at') or now),
+            )
         db.commit()
+        details_db.commit()
     except Exception as e:
         db.rollback()
+        details_db.rollback()
         return jsonify({'error': '导入失败: %s' % e}), 500
 
     return jsonify({'imported': n})

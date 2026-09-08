@@ -39,6 +39,18 @@ python app.py
 #    http://127.0.0.1:5000
 ```
 
+## 牛客自动同步（Tampermonkey）
+
+项目根目录的 [`nowcoder_sync.user.js`](nowcoder_sync.user.js) 是可直接导入 Tampermonkey 的用户脚本。先启动本地 Flask 服务，再在 Tampermonkey 中新建脚本并粘贴该文件内容。脚本会在 `https://www.nowcoder.com/*` 页面上：
+
+- 识别「每日一题」的已完成状态，并同步当天 `is_daily=1`；
+- 识别提交结果中的「答案正确 / Accepted / AC」等成功提示，将当天 `count` 增加 1；
+- 只有检测到本次点击“提交/运行”或按下 `Ctrl/Cmd+Enter` 后的成功结果才会计数，页面中原有的历史 Accepted 提示不会自动计数；
+- 每次写入前先读取 `/api/records` 并合并字段，不覆盖另一项记录；
+- 每道提交题目是否已经计数完全以 CodeAgenda 本地 `submissions` 数据库为准；同一道题当天重复提交不会重复计数，而以前在牛客做过、但数据库中没有的题目，首次在系统运行期间提交通过时会正常计数。
+
+打开浏览器控制台可查看 `[CodeAgenda]` 日志。脚本默认开启调试日志：执行 `window.syncHelper.debugDaily()` 会打印每日一题候选元素及最终判断，执行 `window.syncHelper.debugAC()` 会打印 AC 候选文本；执行 `window.syncHelper.setDebug(false)` 可关闭调试日志。`mockDaily()`、`mockAC()` 和 `scan()` 可用于手动测试同步。如果牛客改版导致识别不到状态，优先根据候选日志调整用户脚本中的 `isDailyComplete()` 和 `acSignal()` 文本匹配规则。
+
 换端口：用环境变量指定，例如
 
 ```bash
@@ -50,7 +62,7 @@ PORT=5001 python app.py
 ## 数据存储与隐私
 
 - 全部数据（刷题记录、背景设置、账号信息）存放在项目根目录的 `records.db`（首次启动自动创建）。
-- `records.db` 已被 `.gitignore` 排除，**不会**被提交到 GitHub——即使公开仓库，你的记录与账号密码也不会泄露。
+- `data/records.db` 与 `data/details.db` 已被 `.gitignore` 排除，**不会**被提交到 GitHub——即使公开仓库，你的记录与账号密码也不会泄露。
 - 想重置数据：关闭服务后删除 `records.db`，下次启动会自动重建空库。
 
 ## 使用说明
@@ -99,6 +111,7 @@ PORT=5001 python app.py
 | GET | `/` | 页面 |
 | GET | `/api/records` | 读取全部记录 |
 | POST | `/api/records` | 保存某天记录（count=0 且 is_daily=0 时删除该天） |
+| POST | `/api/submissions` | 记录当天一道已通过题目（按 date + problem_key 幂等去重） |
 | GET | `/api/summary` | 统计汇总（累计 / 单日最高 / 连登天数） |
 | GET | `/api/export` | 导出全部记录为 JSON |
 | POST | `/api/import` | 导入 JSON 备份 |

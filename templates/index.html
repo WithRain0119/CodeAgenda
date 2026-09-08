@@ -72,6 +72,17 @@
       <p class="heatmap-hint" id="heatmap-hint" hidden>点击任意日期方块记录当天刷题数量（可翻到以前年份补记）</p>
     </section>
 
+    <section class="card passed-card">
+      <div class="card-header">
+        <h2>今日已通过题目</h2>
+        <span class="passed-date" id="passed-date"></span>
+      </div>
+      <div class="passed-list-scroll">
+        <div id="passed-list" class="passed-list"></div>
+      </div>
+      <p class="passed-empty" id="passed-empty">当天暂无已通过题目</p>
+    </section>
+
     <section class="card heatmap-card">
       <div class="card-header">
         <h2>每日一题足迹</h2>
@@ -180,6 +191,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260908-submissions-v2"></script>
 </body>
 </html>

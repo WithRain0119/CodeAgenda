@@ -121,6 +121,34 @@ h1.page-title {
 .card-header h2 { font-size: 16px; margin: 0; }
 
 .heatmap-card + .heatmap-card { margin-top: 18px; }
+.passed-card {
+  margin-top: 18px;
+  min-height: 220px;
+  box-shadow: 0 1px 3px rgba(31, 35, 40, 0.08);
+}
+.passed-date { color: #57606a; font-size: 12px; }
+.passed-list-scroll {
+  height: 156px;
+  overflow-y: auto;
+  padding-right: 8px;
+}
+.passed-list { display: flex; flex-direction: column; gap: 8px; }
+.passed-item {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  padding: 5px 8px;
+  border-left: 3px solid #2da44e;
+  border-radius: 4px;
+  background: #f6f8fa;
+  box-shadow: inset 0 0 0 1px rgba(208, 215, 222, 0.55);
+  font-size: 13px;
+}
+.passed-item time { color: #57606a; font-variant-numeric: tabular-nums; }
+.passed-item a { color: #0969da; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.passed-empty { color: #57606a; font-size: 13px; text-align: center; margin: 58px 0 0; }
 
 .legend {
   list-style: none;

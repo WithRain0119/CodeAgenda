@@ -3,6 +3,7 @@ static/backgrounds/*
 !static/backgrounds/.gitkeep
 __pycache__/
 records.db
+data/*.db
 CLAUDE.md
 prompt.md
 CodeAgenda.bat
