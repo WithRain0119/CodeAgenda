@@ -112,6 +112,7 @@ PORT=5001 python app.py
 | GET | `/api/records` | 读取全部记录 |
 | POST | `/api/records` | 保存某天记录（count=0 且 is_daily=0 时删除该天） |
 | POST | `/api/submissions` | 记录当天一道已通过题目（按 date + problem_key 幂等去重） |
+| GET/POST | `/api/daily-problems` | 读取或保存 Tracker 每日一题（按日期保存题名和链接） |
 | GET | `/api/summary` | 统计汇总（累计 / 单日最高 / 连登天数） |
 | GET | `/api/export` | 导出全部记录为 JSON |
 | POST | `/api/import` | 导入 JSON 备份 |

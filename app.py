@@ -70,6 +70,7 @@ def init_db():
         ''')
         details = sqlite3.connect(DETAILS_DB_PATH)
         details.execute('''CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, date TEXT NOT NULL, problem_key TEXT NOT NULL, created_at TEXT, UNIQUE(date, problem_key))''')
+        details.execute('''CREATE TABLE IF NOT EXISTS daily_problems (date TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT NOT NULL, created_at TEXT, updated_at TEXT)''')
         details.commit()
         details.close()
         conn.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)''')
@@ -264,6 +265,39 @@ def list_submissions():
     return jsonify({'submissions': [dict(r) for r in rows]})
 
 
+@app.route('/api/daily-problems', methods=['POST'])
+def save_daily_problem():
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({'error': '请求体必须为 JSON 对象'}), 400
+    date_str = validate_date(body.get('date'))
+    title = body.get('title')
+    url = body.get('url')
+    if date_str is None or not isinstance(title, str) or not title.strip() or not isinstance(url, str) or not url.strip():
+        return jsonify({'error': 'date、title 或 url 无效'}), 400
+    db = get_details_db()
+    now = now_str()
+    db.execute('''INSERT INTO daily_problems (date, title, url, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+                  ON CONFLICT(date) DO UPDATE SET title=excluded.title, url=excluded.url, updated_at=excluded.updated_at''',
+               (date_str, title.strip()[:500], url.strip()[:1000], now, now))
+    db.commit()
+    row = db.execute('SELECT * FROM daily_problems WHERE date = ?', (date_str,)).fetchone()
+    return jsonify({'problem': dict(row)})
+
+
+@app.route('/api/daily-problems', methods=['GET'])
+def list_daily_problems():
+    date_str = request.args.get('date')
+    if date_str is not None and validate_date(date_str) is None:
+        return jsonify({'error': 'date 必须是合法 YYYY-MM-DD'}), 400
+    db = get_details_db()
+    if date_str:
+        rows = db.execute('SELECT date, title, url, created_at, updated_at FROM daily_problems WHERE date = ?', (date_str,)).fetchall()
+    else:
+        rows = db.execute('SELECT date, title, url, created_at, updated_at FROM daily_problems ORDER BY date ASC').fetchall()
+    return jsonify({'problems': [dict(r) for r in rows]})
+
+
 @app.route('/api/summary', methods=['GET'])
 def summary():
     db = get_db()
@@ -319,10 +353,14 @@ def export_records():
     submissions = get_details_db().execute(
         'SELECT date, problem_key, created_at FROM submissions ORDER BY date ASC, created_at ASC'
     ).fetchall()
+    daily_problems = get_details_db().execute(
+        'SELECT date, title, url, created_at, updated_at FROM daily_problems ORDER BY date ASC'
+    ).fetchall()
     return jsonify({
         'exported_at': now_str(),
         'records': [row_to_int_dict(r) for r in rows],
         'submissions': [dict(r) for r in submissions],
+        'daily_problems': [dict(r) for r in daily_problems],
     })
 
 
@@ -332,9 +370,11 @@ def import_records():
     if isinstance(body, dict) and 'records' in body:
         records = body['records']
         submissions = body.get('submissions', [])
+        daily_problems = body.get('daily_problems', [])
     elif isinstance(body, list):
         records = body
         submissions = []
+        daily_problems = []
     else:
         return jsonify({'error': '请求体必须为数组或 {"records": [...]}'}), 400
     if not isinstance(records, list):
@@ -378,6 +418,17 @@ def import_records():
                 'INSERT OR IGNORE INTO submissions (id, date, problem_key, created_at) VALUES (?, ?, ?, ?)',
                 (uuid.uuid4().hex, date_str, problem_key.strip()[:500], item.get('created_at') or now),
             )
+        for item in daily_problems if isinstance(daily_problems, list) else []:
+            if not isinstance(item, dict):
+                continue
+            date_str = validate_date(item.get('date'))
+            title = item.get('title')
+            url = item.get('url')
+            if date_str is None or not isinstance(title, str) or not title.strip() or not isinstance(url, str) or not url.strip():
+                continue
+            details_db.execute('''INSERT INTO daily_problems (date, title, url, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+                                  ON CONFLICT(date) DO UPDATE SET title=excluded.title, url=excluded.url, updated_at=excluded.updated_at''',
+                               (date_str, title.strip()[:500], url.strip()[:1000], item.get('created_at') or now, item.get('updated_at') or now))
         db.commit()
         details_db.commit()
     except Exception as e:

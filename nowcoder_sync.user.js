@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CodeAgenda - 牛客刷题同步
 // @namespace    codeagenda.local
-// @version      1.2.0
+// @version      1.3.0
 // @description  自动同步牛客每日一题和 Accepted 提交到本地 CodeAgenda
 // @match        https://www.nowcoder.com/*
 // @grant        GM_xmlhttpRequest
@@ -25,6 +25,7 @@
   var lastAcSyncAt = 0;
   var acSyncInFlight = false;
   var dailySyncInFlight = false;
+  var trackerDailyKey = '';
   var acReady = false;
   var submissionArmed = false;
   var lastSubmitAt = '';
@@ -38,6 +39,7 @@
   var lastRequestError = '';
   var lastGateInfo = '';
   var lastProbeSignal = '';
+  var dailyDebug = { trackerFound: false, trackerTitle: '', trackerUrl: '', dbProblem: '', currentUrl: '', match: '未检查', result: '', error: '' };
   var DEBUG = true;
 
   function log() {
@@ -166,6 +168,7 @@
       lastRequestResponse: lastRequestResponse,
       lastRequestError: lastRequestError,
       lastGateInfo: lastGateInfo,
+      dailyDebug: dailyDebug,
       lastProbeSignal: lastProbeSignal,
       seenSignals: Array.from(seenAcSignals)
     };
@@ -177,9 +180,15 @@
   function debugDatabase() {
     var ds = today();
     return request('GET', '/api/records').then(function (records) {
-      return request('GET', '/api/submissions?date=' + encodeURIComponent(ds)).then(function (submissions) {
+      return Promise.all([
+        request('GET', '/api/submissions?date=' + encodeURIComponent(ds)),
+        request('GET', '/api/daily-problems?date=' + encodeURIComponent(ds))
+      ]).then(function (parts) {
+        var submissions = parts[0];
+        var daily = parts[1];
         var row = (records.records || []).find(function (r) { return r.date === ds; }) || null;
-        var result = { date: ds, record: row, submissions: submissions.submissions || [], currentProblemKey: problemKey() };
+        var dailyProblem = daily.problems && daily.problems[0] ? daily.problems[0] : null;
+        var result = { date: ds, record: row, submissions: submissions.submissions || [], dailyProblem: dailyProblem, currentProblemUrl: currentProblemUrl(), currentProblemKey: problemKey() };
         console.log('[CodeAgenda debug] 本地数据库诊断:', result);
         console.table(result.submissions);
         return result;
@@ -206,6 +215,8 @@
         ' | 最近成功：' + (lastSuccessSignal || '无') +
         ' | 轮询：' + watchAttempts + '次' +
         ' | 网络探针：' + (lastProbeSignal || '无') +
+        ' | 每日匹配：' + dailyDebug.match +
+        ' | 每日结果：' + (dailyDebug.result || dailyDebug.error || '未处理') +
         ' | 请求：' + (lastRequestResponse || lastRequestError || '未发送');
     }
     document.getElementById('codeagenda-check').addEventListener('click', function () { showState(); debugDaily(); });
@@ -213,7 +224,7 @@
       text.textContent = '正在读取本地数据库...';
       debugDatabase().then(function (r) {
         var found = (r.submissions || []).some(function (x) { return x.problem_key === r.currentProblemKey; });
-        text.textContent = '数据库连接成功 | 今日汇总：' + (r.record ? r.record.count + ' 题' : '无记录') + ' | 本题数据库状态：' + (found ? '已有记录（本次不会增加）' : '无记录（下次真实提交成功会增加）');
+        text.textContent = '数据库连接成功 | 今日汇总：' + (r.record ? r.record.count + ' 题' : '无记录') + ' | 本题：' + (found ? '已有提交记录' : '无提交记录') + ' | 每日题：' + (r.dailyProblem ? r.dailyProblem.title : '未保存') + ' | 当前题是否每日题：' + (r.dailyProblem && canonicalUrl(r.dailyProblem.url) === r.currentProblemUrl ? '是' : '否');
       }).catch(function (e) { text.textContent = '数据库连接失败：' + e.message; });
     });
     showState();
@@ -259,6 +270,66 @@
     return request('POST', '/api/submissions', { date: today(), problem_key: problem });
   }
 
+  function canonicalUrl(value) {
+    try {
+      var u = new URL(value, location.origin);
+      return u.origin + u.pathname.replace(/\/+$/, '');
+    } catch (e) { return String(value || '').split(/[?#]/)[0].replace(/\/+$/, ''); }
+  }
+
+  function currentProblemUrl() {
+    return canonicalUrl(location.href);
+  }
+
+  function syncTrackerDailyProblem() {
+    if (location.pathname !== '/problem/tracker') return;
+    var link = document.querySelector('#daily-problem-container a.problem-title-link[href]');
+    if (!link) { dailyDebug.trackerFound = false; debug('Tracker 尚未找到每日一题链接'); return; }
+    var title = textOf(link);
+    var url = canonicalUrl(link.href);
+    dailyDebug.trackerFound = true;
+    dailyDebug.trackerTitle = title;
+    dailyDebug.trackerUrl = url;
+    var key = today() + '|' + title + '|' + url;
+    if (!title || !url || key === trackerDailyKey) return;
+    trackerDailyKey = key;
+    log('发现 Tracker 今日每日一题:', title, url);
+    request('POST', '/api/daily-problems', { date: today(), title: title, url: url }).then(function (data) {
+      dailyDebug.result = 'Tracker 保存成功';
+      debug('Tracker 每日一题保存响应:', data);
+    }).catch(function (error) {
+      trackerDailyKey = '';
+      dailyDebug.error = error.message;
+      log('保存每日一题失败:', error.message);
+    });
+  }
+
+  function markDailyIfMatched() {
+    // Do not trust the old browser marker here. The local daily_problems table
+    // and the current problem URL are authoritative; setting is_daily=1 is idempotent.
+    return request('GET', '/api/daily-problems?date=' + encodeURIComponent(today())).then(function (data) {
+      var p = data && data.problems && data.problems[0];
+      dailyDebug.dbProblem = p ? (p.title + ' | ' + canonicalUrl(p.url)) : '(无记录)';
+      dailyDebug.currentUrl = currentProblemUrl();
+      if (!p || canonicalUrl(p.url) !== currentProblemUrl()) {
+        dailyDebug.match = '不匹配';
+        dailyDebug.result = '';
+        log('当前通过题不是今日每日一题:', currentProblemUrl(), p ? canonicalUrl(p.url) : '(未记录)');
+        return false;
+      }
+      dailyDebug.match = '匹配';
+      return updateTodayRecord(null, 1).then(function () {
+        GM_setValue(DAILY_MARKER_KEY, today());
+        dailyDebug.result = '已标记 records.is_daily=1';
+        log('已标记今日每日一题完成:', p.title);
+        return true;
+      });
+    }).catch(function (error) {
+      dailyDebug.error = error.message;
+      throw error;
+    });
+  }
+
   function syncDaily() {
     if (dailySyncInFlight || GM_getValue(DAILY_MARKER_KEY, '') === today() || !isDailyComplete()) return;
     dailySyncInFlight = true;
@@ -291,7 +362,7 @@
     recordSubmission(problemKey()).then(function (result) {
       if (result.duplicate) log('该题今天已经计数，跳过重复提交');
       submissionArmed = false;
-      return result;
+      return markDailyIfMatched().catch(function (error) { log('每日一题匹配失败:', error.message); return false; }).then(function () { return result; });
     }).catch(function (error) {
       // 请求失败时允许后续相同结果重试。
       seenAcSignals.delete(eventKey);
@@ -300,7 +371,7 @@
   }
 
   function scan() {
-    syncDaily();
+    syncTrackerDailyProblem();
     syncAccepted(acSignal());
   }
 
@@ -401,7 +472,7 @@
       }
     }, true);
     setTimeout(function () {
-      syncDaily();
+      syncTrackerDailyProblem();
       log('自动同步已启动');
     }, 2500);
   }
