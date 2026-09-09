@@ -130,7 +130,7 @@ h1.page-title {
 
 .heatmap-card + .heatmap-card { margin-top: 18px; }
 .passed-card {
-  margin-top: 18px;
+  margin: 18px 0;
   min-height: 220px;
   box-shadow: 0 1px 3px rgba(31, 35, 40, 0.08);
 }
