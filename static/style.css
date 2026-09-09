@@ -95,11 +95,12 @@ h1.page-title {
 #btn-count-plus:hover { background: #0b74e5; }
 
 #btn-count-delete {
-  color: #cf222e;
-  border-color: #ffebe9;
-  background: #fff;
+  color: #fff;
+  border-color: rgba(31, 35, 40, 0.15);
+  background: #cf222e;
 }
-#btn-count-delete:hover { border-color: #cf222e; background: #fff5f5; }
+#btn-count-delete:hover { background: #a40e26; }
+#btn-count-delete:active { background: #82071e; }
 
 #btn-daily-toggle.on {
   background: #1a7f37;
