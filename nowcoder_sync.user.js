@@ -40,7 +40,8 @@
   var lastGateInfo = '';
   var lastProbeSignal = '';
   var dailyDebug = { trackerFound: false, trackerTitle: '', trackerUrl: '', dbProblem: '', currentUrl: '', match: '未检查', result: '', error: '' };
-  var DEBUG = true;
+  // var DEBUG = true; // Original debug logging switch; restore when troubleshooting.
+  var DEBUG = false;
 
   function log() {
     var args = Array.prototype.slice.call(arguments);
@@ -144,6 +145,7 @@
     return false;
   }
 
+  /* DEBUG HELPERS DISABLED - uncomment this block when troubleshooting.
   function debugDaily() {
     DEBUG = true;
     var result = isDailyComplete();
@@ -198,7 +200,9 @@
       throw error;
     });
   }
+  */ // END DEBUG HELPERS
 
+  /* DEBUG PANEL DISABLED - uncomment this block when troubleshooting.
   function installDebugPanel() {
     if (!document.body || document.getElementById('codeagenda-debug-panel')) return;
     var panel = document.createElement('div');
@@ -230,6 +234,7 @@
     showState();
     setInterval(showState, 500);
   }
+  */ // END DEBUG PANEL
 
   function acSignal() {
     var successRe = /(答案正确|提交成功|恭喜你通过本题|通过本题|用例通过|全部通过|测试通过|Accepted|\bAC\b|运行成功|编译成功)/i;
@@ -415,11 +420,13 @@
   var helper = {
     updateTodayRecord: updateTodayRecord,
     scan: scan,
+    /* DEBUG API DISABLED - uncomment these entries when troubleshooting.
     debugDaily: debugDaily,
     debugAC: function () { DEBUG = true; var result = acSignal(); console.log('[CodeAgenda debug] AC 候选:', result || '(无)'); return result; },
     debugState: debugState,
     debugDatabase: debugDatabase,
     setDebug: function (enabled) { DEBUG = !!enabled; },
+    */ // END DEBUG API
     mockDaily: function () { return updateTodayRecord(null, 1).then(function () { GM_setValue(DAILY_MARKER_KEY, today()); }); },
     mockAC: function () {
       return recordSubmission(problemKey());
@@ -439,7 +446,7 @@
   });
   function start() {
     if (!document.body) return;
-    installDebugPanel();
+    // installDebugPanel(); // Debug panel disabled for normal use.
     // 先监听动态结果，再在 2.5 秒后做首次扫描；首次扫描只建立 AC 提示基线。
     observer.observe(document.body, { subtree: true, childList: true, characterData: true });
     acReady = true;
