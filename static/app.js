@@ -76,6 +76,36 @@ function renderPassedList(ds) {
   });
 }
 
+function submissionName(item) {
+  var raw = String(item && item.problem_key || '');
+  var split = raw.indexOf('|');
+  return (split >= 0 ? raw.slice(split + 1) : raw) || '未命名题目';
+}
+
+function renderDeleteSubmissionList() {
+  var list = document.getElementById('delete-submission-list');
+  var empty = document.getElementById('delete-submission-empty');
+  if (!list || !empty) return;
+  list.textContent = '';
+  var rows = submissionsMap.get(todayStr) || [];
+  empty.hidden = rows.length > 0;
+  rows.forEach(function (item) {
+    var row = document.createElement('div');
+    row.className = 'delete-submission-item';
+    var name = document.createElement('span');
+    name.className = 'delete-submission-name';
+    name.textContent = submissionName(item);
+    name.title = String(item.problem_key || '');
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = '删除';
+    button.addEventListener('click', function () { openConfirmDelete(item); });
+    row.appendChild(name);
+    row.appendChild(button);
+    list.appendChild(row);
+  });
+}
+
 /* ===== 顶栏：显示今天是几月几号 ===== */
 document.getElementById('today-date').textContent =
   today.getFullYear() + '年' + (today.getMonth() + 1) + '月' + today.getDate() + '日';
@@ -214,6 +244,7 @@ function renderSummary(sum) {
 var todayCountEl = document.getElementById('today-count');
 var btnDailyToggle = document.getElementById('btn-daily-toggle');
 var btnCountPlus = document.getElementById('btn-count-plus');
+var btnCountDelete = document.getElementById('btn-count-delete');
 
 function updateTodayBar() {
   var rec = recordsMap.get(todayStr);
@@ -250,12 +281,7 @@ btnDailyToggle.addEventListener('click', function () {
 });
 
 btnCountPlus.addEventListener('click', function () {
-  var rec = recordsMap.get(todayStr);
-  saveToday({
-    date: todayStr,
-    count: (rec ? rec.count : 0) + 1,
-    is_daily: (rec && rec.is_daily === 1) ? 1 : 0
-  });
+  openSubmissionModal();
 });
 
 function refresh() {
@@ -280,21 +306,33 @@ function refresh() {
     renderHeatmaps();
     updateTodayBar();
     renderPassedList(selectedPassedDate || todayStr);
-    return fetch('/api/submissions', { cache: 'no-store' }).then(function (r) {
-      if (!r.ok) throw new Error('submissions HTTP ' + r.status);
-      return r.json();
-    }).then(function (data) {
+    return loadSubmissions().then(function (data) {
       submissionsMap = new Map();
       (data.submissions || []).forEach(function (item) {
         if (!submissionsMap.has(item.date)) submissionsMap.set(item.date, []);
         submissionsMap.get(item.date).push(item);
       });
       renderPassedList(selectedPassedDate || todayStr);
+      renderDeleteSubmissionList();
     }).catch(function (error) {
       console.error('[CodeAgenda] 读取已通过题目失败:', error);
       submissionsMap = new Map();
       renderPassedList(selectedPassedDate || todayStr);
     });
+  });
+}
+
+function loadSubmissions() {
+  return fetch('/api/submissions', { cache: 'no-store' }).then(function (r) {
+    if (!r.ok) throw new Error('submissions HTTP ' + r.status);
+    return r.json();
+  }).then(function (data) {
+    submissionsMap = new Map();
+    (data.submissions || []).forEach(function (item) {
+      if (!submissionsMap.has(item.date)) submissionsMap.set(item.date, []);
+      submissionsMap.get(item.date).push(item);
+    });
+    return data;
   });
 }
 
@@ -310,6 +348,20 @@ var modalDateDailyEl = document.getElementById('modal-date-d');
 var dailyCheck = document.getElementById('modal-daily');
 var btnSaveD = document.getElementById('btn-save-d');
 var btnCancelD = document.getElementById('btn-cancel-d');
+
+var maskSubmission = document.getElementById('modal-mask-submission');
+var submissionNameInput = document.getElementById('modal-submission-name');
+var submissionUrlInput = document.getElementById('modal-submission-url');
+var btnSaveSubmission = document.getElementById('btn-save-submission');
+var btnCancelSubmission = document.getElementById('btn-cancel-submission');
+
+var maskDelete = document.getElementById('modal-mask-delete');
+var btnCancelDelete = document.getElementById('btn-cancel-delete');
+var maskConfirmDelete = document.getElementById('modal-mask-confirm-delete');
+var confirmDeleteText = document.getElementById('confirm-delete-text');
+var btnConfirmDeleteNo = document.getElementById('btn-confirm-delete-no');
+var btnConfirmDeleteYes = document.getElementById('btn-confirm-delete-yes');
+var pendingDeleteSubmission = null;
 
 var currentDate = null; // 两个弹窗共用；同时只会打开一个
 
@@ -331,6 +383,90 @@ function postRecord(body) {
     return false;
   });
 }
+
+function openSubmissionModal() {
+  if (!maskSubmission || !submissionNameInput || !submissionUrlInput) {
+    alert('页面资源已更新，请刷新页面后重试');
+    return;
+  }
+  submissionNameInput.value = '';
+  submissionUrlInput.value = '';
+  maskSubmission.classList.add('open');
+  submissionNameInput.focus();
+}
+
+function closeSubmissionModal() { maskSubmission.classList.remove('open'); }
+
+btnSaveSubmission.addEventListener('click', function () {
+  var title = String(submissionNameInput.value || '').trim();
+  var raw = String(submissionUrlInput.value || '').trim();
+  if (!title) { alert('请输入题目名称'); submissionNameInput.focus(); return; }
+  if (!raw) { alert('请输入本题链接'); submissionUrlInput.focus(); return; }
+  var link = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : 'https://' + raw;
+  try { new URL(link); } catch (e) { alert('请输入有效的题目链接'); submissionUrlInput.focus(); return; }
+  btnSaveSubmission.disabled = true;
+  fetch('/api/submissions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ date: todayStr, problem_url: link, problem_title: title })
+  }).then(function (resp) {
+    return resp.json().catch(function () { return {}; }).then(function (data) {
+      if (!resp.ok) throw new Error((data && data.error) || 'HTTP ' + resp.status);
+      if (data.duplicate) {
+        alert(data.message || '今天已经通过了，重复提交无效');
+        return;
+      }
+      closeSubmissionModal();
+      return refresh();
+    });
+  }).catch(function (e) { alert('保存失败：' + e.message); })
+    .then(function () { btnSaveSubmission.disabled = false; });
+});
+
+btnCancelSubmission.addEventListener('click', closeSubmissionModal);
+
+function openDeleteModal() {
+  loadSubmissions().then(function () {
+    renderDeleteSubmissionList();
+    maskDelete.classList.add('open');
+  }).catch(function (e) { alert('读取今日题目失败：' + e.message); });
+}
+
+function closeDeleteModal() { maskDelete.classList.remove('open'); }
+
+function openConfirmDelete(item) {
+  pendingDeleteSubmission = item;
+  confirmDeleteText.textContent = '确定删除“' + submissionName(item) + '”吗？删除后将无法恢复。';
+  closeDeleteModal();
+  maskConfirmDelete.classList.add('open');
+}
+
+function closeConfirmDelete() {
+  maskConfirmDelete.classList.remove('open');
+  pendingDeleteSubmission = null;
+}
+
+btnCountDelete.addEventListener('click', openDeleteModal);
+btnCancelDelete.addEventListener('click', closeDeleteModal);
+btnConfirmDeleteNo.addEventListener('click', function () {
+  closeConfirmDelete();
+  openDeleteModal();
+});
+btnConfirmDeleteYes.addEventListener('click', function () {
+  if (!pendingDeleteSubmission || !pendingDeleteSubmission.id) return;
+  btnConfirmDeleteYes.disabled = true;
+  fetch('/api/submissions/' + encodeURIComponent(pendingDeleteSubmission.id), { method: 'DELETE' })
+    .then(function (resp) {
+      return resp.json().catch(function () { return {}; }).then(function (data) {
+        if (!resp.ok) throw new Error((data && data.error) || 'HTTP ' + resp.status);
+        closeConfirmDelete();
+        return refresh();
+      });
+    }).then(function () {
+      openDeleteModal();
+    }).catch(function (e) { alert('删除失败：' + e.message); })
+    .then(function () { btnConfirmDeleteYes.disabled = false; });
+});
 
 /* --- 填写数量弹窗：只改普通题数，保留当天每日一题状态 --- */
 function openCountModal(ds) {

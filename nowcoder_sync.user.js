@@ -311,7 +311,7 @@
 
   function markDailyIfMatched() {
     // Do not trust the old browser marker here. The local daily_problems table
-    // and the current problem URL are authoritative; setting is_daily=1 is idempotent.
+    // and the current problem URL are authoritative; records is derived server-side.
     return request('GET', '/api/daily-problems?date=' + encodeURIComponent(today())).then(function (data) {
       var p = data && data.problems && data.problems[0];
       dailyDebug.dbProblem = p ? (p.title + ' | ' + canonicalUrl(p.url)) : '(无记录)';
@@ -323,12 +323,12 @@
         return false;
       }
       dailyDebug.match = '匹配';
-      return updateTodayRecord(null, 1).then(function () {
-        GM_setValue(DAILY_MARKER_KEY, today());
-        dailyDebug.result = '已标记 records.is_daily=1';
-        log('已标记今日每日一题完成:', p.title);
-        return true;
-      });
+      // /api/submissions recalculates today's records row from details.db.
+      // Do not write records.is_daily directly from the browser anymore.
+      GM_setValue(DAILY_MARKER_KEY, today());
+      dailyDebug.result = '已提交每日一题，records 将自动同步';
+      log('当前通过题与今日每日一题匹配:', p.title);
+      return Promise.resolve(true);
     }).catch(function (error) {
       dailyDebug.error = error.message;
       throw error;
@@ -339,9 +339,10 @@
     if (dailySyncInFlight || GM_getValue(DAILY_MARKER_KEY, '') === today() || !isDailyComplete()) return;
     dailySyncInFlight = true;
     log('检测到今日每日一题已完成');
-    updateTodayRecord(null, 1).then(function () {
-      GM_setValue(DAILY_MARKER_KEY, today());
-    }).catch(function () {}).then(function () { dailySyncInFlight = false; });
+    // The aggregate is derived from the accepted submission in details.db.
+    // Keep this detector for diagnostics, but do not fabricate a record row.
+    GM_setValue(DAILY_MARKER_KEY, today());
+    dailySyncInFlight = false;
   }
 
   function syncAccepted(signal) {

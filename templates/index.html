@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>牛客刷题日程</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=20260909-submission-crud-v3">
 </head>
 <body>
   <div class="page">
@@ -45,7 +45,8 @@
       </div>
       <div class="today-actions">
         <button id="btn-daily-toggle" type="button" title="点击切换今天是否完成每日一题">每日一题</button>
-        <button id="btn-count-plus" type="button">过题数 +1</button>
+        <button id="btn-count-plus" type="button">添加题目</button>
+        <button id="btn-count-delete" type="button">删除题目</button>
       </div>
     </section>
 
@@ -148,6 +149,49 @@
     </div>
   </div>
 
+  <!-- 弹窗：手动添加今日通过题目 -->
+  <div class="modal-mask" id="modal-mask-submission">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-submission-title">
+      <div class="modal-date" id="modal-submission-title">添加今日通过题目</div>
+      <label class="field">
+        <span class="field-label">题目名称</span>
+        <input class="input" type="text" id="modal-submission-name" maxlength="500" placeholder="请输入题目名称" autocomplete="off">
+      </label>
+      <label class="field">
+        <span class="field-label">题目链接</span>
+        <input class="input" type="url" id="modal-submission-url" placeholder="https://www.nowcoder.com/..." autocomplete="off">
+      </label>
+      <div class="modal-actions">
+        <button id="btn-cancel-submission" type="button">取消</button>
+        <button class="primary" id="btn-save-submission" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 弹窗：选择要删除的今日通过题目 -->
+  <div class="modal-mask" id="modal-mask-delete">
+    <div class="modal modal-delete" role="dialog" aria-modal="true" aria-labelledby="modal-delete-title">
+      <div class="modal-date" id="modal-delete-title">删除今日通过题目</div>
+      <div id="delete-submission-list" class="delete-submission-list"></div>
+      <p class="passed-empty" id="delete-submission-empty">今天还没有已通过题目</p>
+      <div class="modal-actions">
+        <button id="btn-cancel-delete" type="button">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 弹窗：确认删除题目 -->
+  <div class="modal-mask" id="modal-mask-confirm-delete">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-confirm-delete-title">
+      <div class="modal-date" id="modal-confirm-delete-title">确认删除题目</div>
+      <p class="confirm-delete-text" id="confirm-delete-text"></p>
+      <div class="modal-actions">
+        <button id="btn-confirm-delete-no" type="button">否</button>
+        <button class="danger" id="btn-confirm-delete-yes" type="button">是，删除</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 设置界面：左侧分栏 + 右侧内容 -->
   <div class="modal-mask" id="settings-mask">
     <div class="settings" role="dialog" aria-modal="true" aria-label="设置">
@@ -191,6 +235,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260908-submissions-v2"></script>
+  <script src="/static/app.js?v=20260909-submission-crud-v3"></script>
 </body>
 </html>

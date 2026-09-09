@@ -6,6 +6,7 @@ import re
 import sqlite3
 import uuid
 from datetime import datetime, date, timedelta
+from urllib.parse import urlsplit
 
 from flask import Flask, jsonify, request, render_template, g
 
@@ -20,6 +21,16 @@ ALLOWED_IMG_EXT = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.avif')
 MAX_BG_SIZE = 20 * 1024 * 1024  # 20MB
 
 app = Flask(__name__)
+
+
+@app.after_request
+def disable_dynamic_response_cache(response):
+    """Keep the local UI and API in sync while the app is being updated."""
+    if request.path == '/' or request.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
 
 DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
@@ -163,6 +174,85 @@ def upsert_record(date_str, count, is_daily):
     return dict(row)
 
 
+def problem_url_key(value):
+    """Return a comparable host/path key for a daily URL or submission key."""
+    if not isinstance(value, str):
+        return ''
+    raw = value.strip().split('|', 1)[0].strip()
+    if not raw:
+        return ''
+    if not re.match(r'^[a-z][a-z0-9+.-]*://', raw, re.IGNORECASE):
+        raw = 'https://' + raw
+    try:
+        parsed = urlsplit(raw)
+        host = (parsed.hostname or '').lower()
+        if not host:
+            return ''
+        if host.startswith('www.'):
+            host = host[4:]
+        port = parsed.port
+        if port and not ((parsed.scheme.lower() == 'http' and port == 80) or
+                         (parsed.scheme.lower() == 'https' and port == 443)):
+            host += ':' + str(port)
+        return host + (parsed.path.rstrip('/') or '/')
+    except ValueError:
+        return ''
+
+
+def details_record_for_date(date_str):
+    """Derive a day's count and daily-problem state from details.db."""
+    details_db = get_details_db()
+    rows = details_db.execute(
+        'SELECT problem_key, created_at FROM submissions WHERE date = ?',
+        (date_str,),
+    ).fetchall()
+    daily = details_db.execute(
+        'SELECT url FROM daily_problems WHERE date = ?',
+        (date_str,),
+    ).fetchone()
+    daily_key = problem_url_key(daily['url']) if daily else ''
+    unique_keys = set()
+    for row in rows:
+        key = problem_url_key(row['problem_key']) or str(row['problem_key']).strip()
+        if key:
+            unique_keys.add(key)
+    is_daily = int(bool(daily_key and any(
+        problem_url_key(row['problem_key']) == daily_key for row in rows
+    )))
+    created_values = [row['created_at'] for row in rows if row['created_at']]
+    return {
+        'count': len(unique_keys),
+        'is_daily': is_daily,
+        'latest_submission_at': max(created_values) if created_values else None,
+        'has_submissions': bool(rows),
+    }
+
+
+def sync_record_from_details(date_str, force=False, include_empty=False):
+    """Refresh an aggregate when newer accepted-submission details exist.
+
+    A manually entered record is newer than the detail rows it was based on and
+    is therefore left alone until another accepted submission arrives.
+    """
+    derived = details_record_for_date(date_str)
+    db = get_db()
+    current = db.execute(
+        'SELECT * FROM records WHERE date = ?', (date_str,)
+    ).fetchone()
+    if not derived['has_submissions'] and not include_empty:
+        return dict(current) if current else None
+    if not force and current and current['updated_at'] and derived['latest_submission_at'] and \
+            current['updated_at'] >= derived['latest_submission_at']:
+        return dict(current)
+    return upsert_record(date_str, derived['count'], derived['is_daily'])
+
+
+def sync_today_record_from_details(force=False, include_empty=False):
+    return sync_record_from_details(
+        date.today().isoformat(), force=force, include_empty=include_empty
+    )
+
+
 def row_to_dict(row):
     d = dict(row)
     d['is_daily'] = int(d['is_daily'])
@@ -183,6 +273,7 @@ def index():
 
 @app.route('/api/records', methods=['GET'])
 def list_records():
+    sync_today_record_from_details()
     db = get_db()
     rows = db.execute('SELECT * FROM records ORDER BY date ASC').fetchall()
     return jsonify({'records': [row_to_int_dict(r) for r in rows]})
@@ -223,27 +314,63 @@ def save_submission():
     if not isinstance(body, dict):
         return jsonify({'error': '请求体必须为 JSON 对象'}), 400
     date_str = validate_date(body.get('date'))
-    problem_key = body.get('problem_key')
+    problem_url = body.get('problem_url')
+    problem_title = body.get('problem_title')
+    if problem_url is not None or problem_title is not None:
+        if (not isinstance(problem_url, str) or not problem_url.strip() or
+                not isinstance(problem_title, str) or not problem_title.strip()):
+            return jsonify({'error': '题目名称和题目链接不能为空'}), 400
+        problem_url = problem_url.strip()[:1000]
+        problem_title = problem_title.strip().replace('|', ' ')[:500]
+        if not problem_url_key(problem_url):
+            return jsonify({'error': '题目链接无效'}), 400
+        problem_key = problem_url + '|' + problem_title
+    else:
+        problem_key = body.get('problem_key')
     if date_str is None or not isinstance(problem_key, str) or not problem_key.strip():
         return jsonify({'error': 'date 或 problem_key 无效'}), 400
-    problem_key = problem_key.strip()[:500]
+    problem_key = problem_key.strip()[:1500]
 
     db = get_details_db()
     now = now_str()
+    normalized_key = problem_url_key(problem_key)
+    if normalized_key:
+        existing_rows = db.execute(
+            'SELECT problem_key FROM submissions WHERE date = ?', (date_str,)
+        ).fetchall()
+        if any(problem_url_key(row['problem_key']) == normalized_key for row in existing_rows):
+            db.commit()
+            if date_str == date.today().isoformat():
+                sync_today_record_from_details(force=True)
+            row = get_db().execute('SELECT count, is_daily FROM records WHERE date = ?', (date_str,)).fetchone()
+            return jsonify({
+                'duplicate': True,
+                'message': '今天已经通过了，重复提交无效',
+                'record': row_to_int_dict(row) if row else None,
+            })
     cursor = db.execute(
         'INSERT OR IGNORE INTO submissions (id, date, problem_key, created_at) VALUES (?, ?, ?, ?)',
         (uuid.uuid4().hex, date_str, problem_key, now),
     )
     if cursor.rowcount == 0:
         db.commit()
+        if date_str == date.today().isoformat():
+            sync_today_record_from_details(force=True)
         row = get_db().execute('SELECT count, is_daily FROM records WHERE date = ?', (date_str,)).fetchone()
-        return jsonify({'duplicate': True, 'record': row_to_int_dict(row) if row else None})
+        return jsonify({
+            'duplicate': True,
+            'message': '今天已经通过了，重复提交无效',
+            'record': row_to_int_dict(row) if row else None,
+        })
 
-    row = get_db().execute('SELECT count, is_daily FROM records WHERE date = ?', (date_str,)).fetchone()
-    count = (int(row['count']) if row else 0) + 1
-    is_daily = int(row['is_daily']) if row else 0
-    record = upsert_record(date_str, count, is_daily)
     db.commit()
+    if date_str == date.today().isoformat():
+        record = sync_today_record_from_details(force=True)
+    else:
+        row = get_db().execute('SELECT count, is_daily FROM records WHERE date = ?', (date_str,)).fetchone()
+        count = (int(row['count']) if row else 0) + 1
+        is_daily = int(row['is_daily']) if row else 0
+        record = upsert_record(date_str, count, is_daily)
     return jsonify({'duplicate': False, 'problem_key': problem_key, 'record': record})
 
 
@@ -255,14 +382,33 @@ def list_submissions():
     db = get_details_db()
     if date_str:
         rows = db.execute(
-            'SELECT date, problem_key, created_at FROM submissions WHERE date = ? ORDER BY created_at ASC',
+            'SELECT id, date, problem_key, created_at FROM submissions WHERE date = ? ORDER BY created_at ASC',
             (date_str,),
         ).fetchall()
     else:
         rows = db.execute(
-            'SELECT date, problem_key, created_at FROM submissions ORDER BY date ASC, created_at ASC'
+            'SELECT id, date, problem_key, created_at FROM submissions ORDER BY date ASC, created_at ASC'
         ).fetchall()
     return jsonify({'submissions': [dict(r) for r in rows]})
+
+
+@app.route('/api/submissions/<submission_id>', methods=['DELETE'])
+def delete_submission(submission_id):
+    if not isinstance(submission_id, str) or not submission_id.strip():
+        return jsonify({'error': 'submission_id 无效'}), 400
+    details_db = get_details_db()
+    row = details_db.execute(
+        'SELECT id, date FROM submissions WHERE id = ?', (submission_id,)
+    ).fetchone()
+    if row is None:
+        return jsonify({'error': '题目不存在'}), 404
+    details_db.execute('DELETE FROM submissions WHERE id = ?', (submission_id,))
+    details_db.commit()
+    if row['date'] == date.today().isoformat():
+        record = sync_today_record_from_details(force=True, include_empty=True)
+    else:
+        record = sync_record_from_details(row['date'], force=True, include_empty=True)
+    return jsonify({'deleted': True, 'record': record})
 
 
 @app.route('/api/daily-problems', methods=['POST'])
@@ -282,6 +428,8 @@ def save_daily_problem():
                (date_str, title.strip()[:500], url.strip()[:1000], now, now))
     db.commit()
     row = db.execute('SELECT * FROM daily_problems WHERE date = ?', (date_str,)).fetchone()
+    if date_str == date.today().isoformat():
+        sync_today_record_from_details(force=True)
     return jsonify({'problem': dict(row)})
 
 
@@ -300,6 +448,7 @@ def list_daily_problems():
 
 @app.route('/api/summary', methods=['GET'])
 def summary():
+    sync_today_record_from_details()
     db = get_db()
     rows = db.execute('SELECT date, count, is_daily FROM records').fetchall()
 
@@ -348,6 +497,7 @@ def summary():
 
 @app.route('/api/export', methods=['GET'])
 def export_records():
+    sync_today_record_from_details()
     db = get_db()
     rows = db.execute('SELECT * FROM records ORDER BY date ASC').fetchall()
     submissions = get_details_db().execute(
@@ -416,7 +566,7 @@ def import_records():
                 continue
             details_db.execute(
                 'INSERT OR IGNORE INTO submissions (id, date, problem_key, created_at) VALUES (?, ?, ?, ?)',
-                (uuid.uuid4().hex, date_str, problem_key.strip()[:500], item.get('created_at') or now),
+                (uuid.uuid4().hex, date_str, problem_key.strip()[:1500], item.get('created_at') or now),
             )
         for item in daily_problems if isinstance(daily_problems, list) else []:
             if not isinstance(item, dict):
@@ -431,6 +581,7 @@ def import_records():
                                (date_str, title.strip()[:500], url.strip()[:1000], item.get('created_at') or now, item.get('updated_at') or now))
         db.commit()
         details_db.commit()
+        sync_today_record_from_details()
     except Exception as e:
         db.rollback()
         details_db.rollback()

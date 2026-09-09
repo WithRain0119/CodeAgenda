@@ -84,7 +84,7 @@ h1.page-title {
 .today-count { font-size: 26px; font-weight: 600; line-height: 1.2; }
 .today-unit { color: #57606a; font-size: 13px; }
 
-.today-actions { display: flex; gap: 10px; }
+.today-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .today-actions button { font-size: 13px; padding: 6px 16px; }
 
 #btn-count-plus {
@@ -93,6 +93,13 @@ h1.page-title {
   color: #fff;
 }
 #btn-count-plus:hover { background: #0b74e5; }
+
+#btn-count-delete {
+  color: #cf222e;
+  border-color: #ffebe9;
+  background: #fff;
+}
+#btn-count-delete:hover { border-color: #cf222e; background: #fff5f5; }
 
 #btn-daily-toggle.on {
   background: #1a7f37;
@@ -433,6 +440,54 @@ button.primary:hover { background: #0b74e5; }
   text-align: center;
   margin-top: 16px;
 }
+
+.modal-delete { width: 460px; }
+.delete-submission-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.delete-submission-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid #e5e5ea;
+  border-radius: 8px;
+  background: #f8f8fa;
+}
+.delete-submission-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #1d1d1f;
+  font-size: 13px;
+}
+.delete-submission-item button {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  color: #cf222e;
+  border-color: #ffebe9;
+  background: #fff;
+  font-size: 12px;
+}
+.delete-submission-item button:hover { border-color: #cf222e; background: #fff5f5; }
+.confirm-delete-text {
+  margin: 0;
+  color: #424245;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.modal-actions button.danger {
+  background: #cf222e;
+  border-color: transparent;
+  color: #fff;
+}
+.modal-actions button.danger:hover { background: #a40e26; }
 
 /* ---------- 设置界面（Apple 风格） ---------- */
 .settings {
