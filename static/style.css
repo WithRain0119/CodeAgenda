@@ -134,7 +134,6 @@ h1.page-title {
   min-height: 220px;
   box-shadow: 0 1px 3px rgba(31, 35, 40, 0.08);
 }
-.passed-date { color: #57606a; font-size: 12px; }
 .passed-list-scroll {
   height: 156px;
   overflow-y: auto;

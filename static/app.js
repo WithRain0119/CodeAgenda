@@ -46,13 +46,19 @@ var todayStr = formatDate(today);
 var submissionsMap = new Map();
 var selectedPassedDate = todayStr;
 
+function formatDateLabel(ds) {
+  var d = parseDate(ds);
+  var label = d.getFullYear() + '.' + (d.getMonth() + 1) + '.' + d.getDate();
+  return ds === todayStr ? label + '（今日）' : label;
+}
+
 function renderPassedList(ds) {
   selectedPassedDate = ds || todayStr;
   var list = document.getElementById('passed-list');
   var empty = document.getElementById('passed-empty');
-  var dateEl = document.getElementById('passed-date');
-  if (!list || !empty || !dateEl) return;
-  dateEl.textContent = selectedPassedDate;
+  var titleEl = document.getElementById('passed-title');
+  if (!list || !empty || !titleEl) return;
+  titleEl.textContent = formatDateLabel(selectedPassedDate) + '已通过题目';
   list.textContent = '';
   var rows = submissionsMap.get(selectedPassedDate) || [];
   empty.hidden = rows.length > 0;
@@ -109,6 +115,7 @@ function renderDeleteSubmissionList() {
 /* ===== 顶栏：显示今天是几月几号 ===== */
 document.getElementById('today-date').textContent =
   today.getFullYear() + '年' + (today.getMonth() + 1) + '月' + today.getDate() + '日';
+document.getElementById('today-practice-label').textContent = formatDateLabel(todayStr) + '刷题';
 
 /* ===== 年份翻页 ===== */
 var MIN_YEAR = 2000; // 往回翻页的下限：没有数据也可翻到空白年份补记；有更早记录则以记录年份为准
