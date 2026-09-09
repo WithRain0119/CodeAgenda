@@ -44,7 +44,7 @@ var curYear = null;         // 当前展示的年份
 var today = todayMid();
 var todayStr = formatDate(today);
 var submissionsMap = new Map();
-var selectedPassedDate = todayStr;
+var selectedDate = todayStr;
 
 function formatDateLabel(ds) {
   var d = parseDate(ds);
@@ -52,15 +52,14 @@ function formatDateLabel(ds) {
   return ds === todayStr ? label + '（今日）' : label;
 }
 
-function renderPassedList(ds) {
-  selectedPassedDate = ds || todayStr;
+function renderPassedList() {
   var list = document.getElementById('passed-list');
   var empty = document.getElementById('passed-empty');
   var titleEl = document.getElementById('passed-title');
   if (!list || !empty || !titleEl) return;
-  titleEl.textContent = formatDateLabel(selectedPassedDate) + '已通过题目';
+  titleEl.textContent = formatDateLabel(selectedDate) + '已通过题目';
   list.textContent = '';
-  var rows = submissionsMap.get(selectedPassedDate) || [];
+  var rows = submissionsMap.get(selectedDate) || [];
   empty.hidden = rows.length > 0;
   rows.forEach(function (item) {
     var row = document.createElement('div');
@@ -93,7 +92,7 @@ function renderDeleteSubmissionList() {
   var empty = document.getElementById('delete-submission-empty');
   if (!list || !empty) return;
   list.textContent = '';
-  var rows = submissionsMap.get(todayStr) || [];
+  var rows = submissionsMap.get(selectedDate) || [];
   empty.hidden = rows.length > 0;
   rows.forEach(function (item) {
     var row = document.createElement('div');
@@ -115,7 +114,6 @@ function renderDeleteSubmissionList() {
 /* ===== 顶栏：显示今天是几月几号 ===== */
 document.getElementById('today-date').textContent =
   today.getFullYear() + '年' + (today.getMonth() + 1) + '月' + today.getDate() + '日';
-document.getElementById('today-practice-label').textContent = formatDateLabel(todayStr) + '刷题';
 
 /* ===== 年份翻页 ===== */
 var MIN_YEAR = 2000; // 往回翻页的下限：没有数据也可翻到空白年份补记；有更早记录则以记录年份为准
@@ -143,11 +141,6 @@ function setYearLabels() {
     document.getElementById(p.prevId).disabled = curYear <= r.min;
     document.getElementById(p.nextId).disabled = curYear >= r.max;
   });
-}
-
-function fmtDayHeading(ds) {
-  var d = parseDate(ds);
-  return ds + ' · 星期' + '日一二三四五六'.charAt(d.getDay());
 }
 
 function makeDayCell(extra) {
@@ -207,12 +200,11 @@ function renderHeatmapGrid(p) {
       var cell = makeDayCell(ds === todayStr ? 'today' : '');
       cell.style.background = color;
       cell.title = title;
-      (function (key, md) {
+      (function (key) {
         cell.addEventListener('click', function () {
-          if (md === 'daily') openDailyModal(key);
-          else { openCountModal(key); renderPassedList(key); }
+          selectDate(key);
         });
-      })(ds, p.mode);
+      })(ds);
       b.appendChild(cell);
     }
 
@@ -254,12 +246,23 @@ var btnCountPlus = document.getElementById('btn-count-plus');
 var btnCountDelete = document.getElementById('btn-count-delete');
 
 function updateTodayBar() {
-  var rec = recordsMap.get(todayStr);
+  var selected = parseDate(selectedDate);
+  document.getElementById('today-date').textContent =
+    selected.getFullYear() + '年' + (selected.getMonth() + 1) + '月' + selected.getDate() + '日';
+  document.getElementById('today-practice-label').textContent = formatDateLabel(selectedDate) + '刷题';
+  var rec = recordsMap.get(selectedDate);
   var count = rec ? rec.count : 0;
   var daily = !!(rec && rec.is_daily === 1);
   todayCountEl.textContent = count;
   btnDailyToggle.classList.toggle('on', daily);
   btnDailyToggle.textContent = daily ? '每日一题：已完成' : '每日一题';
+}
+
+function selectDate(ds) {
+  selectedDate = ds;
+  updateTodayBar();
+  renderPassedList();
+  renderDeleteSubmissionList();
 }
 
 function saveToday(body) {
@@ -279,9 +282,9 @@ function saveToday(body) {
 }
 
 btnDailyToggle.addEventListener('click', function () {
-  var rec = recordsMap.get(todayStr);
+  var rec = recordsMap.get(selectedDate);
   saveToday({
-    date: todayStr,
+    date: selectedDate,
     count: rec ? rec.count : 0,
     is_daily: (rec && rec.is_daily === 1) ? 0 : 1
   });
@@ -312,19 +315,19 @@ function refresh() {
     renderSummary(sum);
     renderHeatmaps();
     updateTodayBar();
-    renderPassedList(selectedPassedDate || todayStr);
+    renderPassedList();
     return loadSubmissions().then(function (data) {
       submissionsMap = new Map();
       (data.submissions || []).forEach(function (item) {
         if (!submissionsMap.has(item.date)) submissionsMap.set(item.date, []);
         submissionsMap.get(item.date).push(item);
       });
-      renderPassedList(selectedPassedDate || todayStr);
+      renderPassedList();
       renderDeleteSubmissionList();
     }).catch(function (error) {
       console.error('[CodeAgenda] 读取已通过题目失败:', error);
       submissionsMap = new Map();
-      renderPassedList(selectedPassedDate || todayStr);
+      renderPassedList();
     });
   });
 }
@@ -344,18 +347,6 @@ function loadSubmissions() {
 }
 
 /* ===== 模态框 ===== */
-var mask = document.getElementById('modal-mask');
-var modalDateEl = document.getElementById('modal-date');
-var countInput = document.getElementById('modal-count');
-var btnSave = document.getElementById('btn-save');
-var btnCancel = document.getElementById('btn-cancel');
-
-var maskDaily = document.getElementById('modal-mask-daily');
-var modalDateDailyEl = document.getElementById('modal-date-d');
-var dailyCheck = document.getElementById('modal-daily');
-var btnSaveD = document.getElementById('btn-save-d');
-var btnCancelD = document.getElementById('btn-cancel-d');
-
 var maskSubmission = document.getElementById('modal-mask-submission');
 var submissionNameInput = document.getElementById('modal-submission-name');
 var submissionUrlInput = document.getElementById('modal-submission-url');
@@ -370,27 +361,6 @@ var btnConfirmDeleteNo = document.getElementById('btn-confirm-delete-no');
 var btnConfirmDeleteYes = document.getElementById('btn-confirm-delete-yes');
 var pendingDeleteSubmission = null;
 
-var currentDate = null; // 两个弹窗共用；同时只会打开一个
-
-function postRecord(body) {
-  return fetch('/api/records', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  }).then(function (resp) {
-    return resp.json().catch(function () { return {}; }).then(function (data) {
-      if (!resp.ok) {
-        alert((data && data.error) || '保存失败（HTTP ' + resp.status + '）');
-        return false;
-      }
-      return true;
-    });
-  }).catch(function (e) {
-    alert('保存失败：' + e.message);
-    return false;
-  });
-}
-
 function openSubmissionModal() {
   if (!maskSubmission || !submissionNameInput || !submissionUrlInput) {
     alert('页面资源已更新，请刷新页面后重试');
@@ -398,6 +368,8 @@ function openSubmissionModal() {
   }
   submissionNameInput.value = '';
   submissionUrlInput.value = '';
+  var titleEl = document.getElementById('modal-submission-title');
+  if (titleEl) titleEl.textContent = '添加' + formatDateLabel(selectedDate) + '通过题目';
   maskSubmission.classList.add('open');
   submissionNameInput.focus();
 }
@@ -415,7 +387,7 @@ btnSaveSubmission.addEventListener('click', function () {
   fetch('/api/submissions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ date: todayStr, problem_url: link, problem_title: title })
+    body: JSON.stringify({ date: selectedDate, problem_url: link, problem_title: title })
   }).then(function (resp) {
     return resp.json().catch(function () { return {}; }).then(function (data) {
       if (!resp.ok) throw new Error((data && data.error) || 'HTTP ' + resp.status);
@@ -434,9 +406,11 @@ btnCancelSubmission.addEventListener('click', closeSubmissionModal);
 
 function openDeleteModal() {
   loadSubmissions().then(function () {
+    var titleEl = document.getElementById('modal-delete-title');
+    if (titleEl) titleEl.textContent = '删除' + formatDateLabel(selectedDate) + '通过题目';
     renderDeleteSubmissionList();
     maskDelete.classList.add('open');
-  }).catch(function (e) { alert('读取今日题目失败：' + e.message); });
+  }).catch(function (e) { alert('读取题目失败：' + e.message); });
 }
 
 function closeDeleteModal() { maskDelete.classList.remove('open'); }
@@ -474,61 +448,6 @@ btnConfirmDeleteYes.addEventListener('click', function () {
     }).catch(function (e) { alert('删除失败：' + e.message); })
     .then(function () { btnConfirmDeleteYes.disabled = false; });
 });
-
-/* --- 填写数量弹窗：只改普通题数，保留当天每日一题状态 --- */
-function openCountModal(ds) {
-  currentDate = ds;
-  modalDateEl.textContent = fmtDayHeading(ds);
-  var rec = recordsMap.get(ds);
-  countInput.value = (rec && rec.count > 0) ? rec.count : ''; // 无记录/0题留空，不预填 0
-  mask.classList.add('open');
-  countInput.focus();
-}
-
-function closeCountModal() {
-  mask.classList.remove('open');
-  currentDate = null;
-}
-
-btnSave.addEventListener('click', function () {
-  if (!currentDate) return;
-  var raw = String(countInput.value).trim();
-  var count = raw === '' ? 0 : parseInt(raw, 10);
-  if (isNaN(count) || count < 0) count = 0; // 空/非法输入按 0 处理
-  var rec = recordsMap.get(currentDate);
-  var is_daily = (rec && rec.is_daily === 1) ? 1 : 0;
-  postRecord({ date: currentDate, count: count, is_daily: is_daily }).then(function (ok) {
-    if (ok) { closeCountModal(); return refresh(); }
-  });
-});
-
-btnCancel.addEventListener('click', closeCountModal);
-
-/* --- 每日一题弹窗：只改每日一题状态，保留当天普通题数 --- */
-function openDailyModal(ds) {
-  currentDate = ds;
-  modalDateDailyEl.textContent = fmtDayHeading(ds);
-  var rec = recordsMap.get(ds);
-  dailyCheck.checked = !!(rec && rec.is_daily === 1);
-  maskDaily.classList.add('open');
-}
-
-function closeDailyModal() {
-  maskDaily.classList.remove('open');
-  currentDate = null;
-}
-
-btnSaveD.addEventListener('click', function () {
-  if (!currentDate) return;
-  var rec = recordsMap.get(currentDate);
-  var count = (rec && rec.count > 0) ? rec.count : 0;
-  var is_daily = dailyCheck.checked ? 1 : 0;
-  postRecord({ date: currentDate, count: count, is_daily: is_daily }).then(function (ok) {
-    if (ok) { closeDailyModal(); return refresh(); }
-  });
-});
-
-btnCancelD.addEventListener('click', closeDailyModal);
 
 /* ===== 导出 / 导入 ===== */
 document.getElementById('btn-export').addEventListener('click', function () {
