@@ -6,4 +6,4 @@ records.db
 data/*.db
 CLAUDE.md
 prompt.md
-CodeAgenda.bat
+.codeagenda.lock
