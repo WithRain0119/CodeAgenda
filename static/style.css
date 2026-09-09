@@ -36,12 +36,6 @@ h1.page-title {
   min-width: 0;
 }
 
-.today-date {
-  color: #57606a;
-  font-size: 14px;
-  white-space: nowrap;
-}
-
 #btn-settings { font-size: 13px; padding: 5px 12px; }
 
 /* ---------- 三张统计卡 ---------- */
@@ -130,9 +124,20 @@ h1.page-title {
 
 .heatmap-card + .heatmap-card { margin-top: 18px; }
 .passed-card {
+  display: grid;
+  grid-template-rows: auto 156px;
   margin: 18px 0;
   min-height: 220px;
   box-shadow: 0 1px 3px rgba(31, 35, 40, 0.08);
+}
+.passed-card > .card-header,
+.passed-card > .passed-list-scroll,
+.passed-card > .passed-empty {
+  grid-column: 1;
+}
+.passed-card > .passed-list-scroll,
+.passed-card > .passed-empty {
+  grid-row: 2;
 }
 .passed-list-scroll {
   height: 156px;
@@ -155,7 +160,7 @@ h1.page-title {
 }
 .passed-item time { color: #57606a; font-variant-numeric: tabular-nums; }
 .passed-item a { color: #0969da; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.passed-empty { color: #57606a; font-size: 13px; text-align: center; margin: 58px 0 0; }
+.passed-empty { color: #57606a; font-size: 13px; text-align: center; margin: 0; align-self: center; }
 
 .legend {
   list-style: none;
@@ -263,6 +268,8 @@ h1.page-title {
   box-shadow: inset 0 0 0 1px #eceff1;
 }
 .day.today { box-shadow: inset 0 0 0 1px #0969da; }
+#heatmap .day.selected,
+#heatmap-daily .day.selected { box-shadow: inset 0 0 0 1px #bf8700; }
 
 .heatmap-hint {
   color: #57606a;

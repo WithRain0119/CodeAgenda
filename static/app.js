@@ -111,10 +111,6 @@ function renderDeleteSubmissionList() {
   });
 }
 
-/* ===== 顶栏：显示今天是几月几号 ===== */
-document.getElementById('today-date').textContent =
-  today.getFullYear() + '年' + (today.getMonth() + 1) + '月' + today.getDate() + '日';
-
 /* ===== 年份翻页 ===== */
 var MIN_YEAR = 2000; // 往回翻页的下限：没有数据也可翻到空白年份补记；有更早记录则以记录年份为准
 var HEATMAP_DAILY_COL = '#2da44e'; // 每日一题足迹：已完成当天的绿色
@@ -197,7 +193,8 @@ function renderHeatmapGrid(p) {
         title = rec ? (ds + '：' + rec.count + ' 题') : (ds + '：无记录');
       }
 
-      var cell = makeDayCell(ds === todayStr ? 'today' : '');
+      var cellClass = ds === todayStr ? 'today' : (ds === selectedDate ? 'selected' : '');
+      var cell = makeDayCell(cellClass);
       cell.style.background = color;
       cell.title = title;
       (function (key) {
@@ -247,8 +244,6 @@ var btnCountDelete = document.getElementById('btn-count-delete');
 
 function updateTodayBar() {
   var selected = parseDate(selectedDate);
-  document.getElementById('today-date').textContent =
-    selected.getFullYear() + '年' + (selected.getMonth() + 1) + '月' + selected.getDate() + '日';
   document.getElementById('today-practice-label').textContent = formatDateLabel(selectedDate) + '刷题';
   var rec = recordsMap.get(selectedDate);
   var count = rec ? rec.count : 0;
@@ -260,6 +255,7 @@ function updateTodayBar() {
 
 function selectDate(ds) {
   selectedDate = ds;
+  renderHeatmaps();
   updateTodayBar();
   renderPassedList();
   renderDeleteSubmissionList();
