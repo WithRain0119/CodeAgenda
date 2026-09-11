@@ -1,2 +1,9 @@
-Flask
-PyQt6
+# -*- coding: utf-8 -*-
+# CodeAgenda 依赖清单 —— 已收录 Python 标准库以外的全部依赖
+# 安装：python -m pip install -r requirements.txt
+# 其余 import（sqlite3 / ctypes / msvcrt / urllib 等）均由 Python 自带，无需安装。
+
+Flask    # 网页后端（app.py）：本地 HTTP 服务、JSON 接口与页面渲染
+PyQt6    # 桌面端（tray.py）：系统托盘、日志窗口与启动提示框
+
+# 浏览器端 nowcoder_sync.user.js 经 Tampermonkey 扩展安装，不属于 pip 依赖。
