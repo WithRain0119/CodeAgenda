@@ -28,3 +28,4 @@ show_logs completed visible=True hwnd=1314146 geometry=(260, 174, 760, 480)
 deferred present visible=True geometry=(260, 174, 760, 480)
 logs QAction connected
 logs QAction connected
+logs QAction connected

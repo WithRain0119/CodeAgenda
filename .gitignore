@@ -7,3 +7,4 @@ data/*.db
 CLAUDE.md
 prompt.md
 .codeagenda.lock
+tray_debug.log
