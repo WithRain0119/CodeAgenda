@@ -4,7 +4,8 @@ from __future__ import annotations
 import ctypes, os, subprocess, sys, threading, webbrowser
 from pathlib import Path
 from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, QTimer, Qt
-from PyQt6.QtGui import QColor, QCursor, QFont, QGuiApplication, QIcon
+from PyQt6.QtGui import QColor, QCursor, QFont, QGuiApplication, QIcon, QPainter, QPixmap
+from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QMainWindow, QMenu, QPlainTextEdit, QSystemTrayIcon, QVBoxLayout, QWidget
 
 try:
@@ -16,6 +17,36 @@ BASE_DIR = Path(__file__).resolve().parent
 LOCK_PATH = BASE_DIR / ".codeagenda.lock"
 WEB_URL = os.environ.get("CODEAGENDA_URL", "http://127.0.0.1:5000")
 ICON_PATH = BASE_DIR / "static" / "favicon.svg"
+# Windows 托盘与任务栏会按系统尺寸（16/32/48…）索要 HICON，这里预先把 SVG 渲染成各档位位图，
+# 避免 QIcon(路径) 惰性加载时取不到对应尺寸而回退成 pythonw.exe 的默认图标。
+ICON_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
+
+
+# Windows 任务栏按「应用」归组按钮，进程没声明 AppUserModelID 时会挂到 pythonw.exe 名下，
+# 于是任务栏按钮显示 pythonw.exe 的 Python 图标，而不是窗口自己设的 WM_SETICON 图标。
+APP_USER_MODEL_ID = "CodeAgenda.Tray"
+
+
+def set_app_user_model_id():
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except (AttributeError, OSError):
+        pass  # 非 Windows 或调用失败：不影响托盘与网页功能
+
+
+def load_icon():
+    icon = QIcon()
+    renderer = QSvgRenderer(str(ICON_PATH))
+    if not renderer.isValid():
+        return icon
+    for size in ICON_SIZES:
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        renderer.render(painter)
+        painter.end()
+        icon.addPixmap(pixmap)
+    return icon
 
 
 class SingleInstance:
@@ -120,8 +151,11 @@ class Toast(QWidget):
 class TrayApp:
     def __init__(self):
         self.instance = SingleInstance(LOCK_PATH); self.process = None; self.log_lines = []; self.log_lock = threading.Lock()
+        set_app_user_model_id()  # 必须在创建任何窗口之前声明，任务栏才会用本程序的图标
         self.qt = QApplication(sys.argv); self.qt.setQuitOnLastWindowClosed(False)
-        self.icon = QIcon(str(ICON_PATH)); self.tray = QSystemTrayIcon(self.icon); self.tray.setToolTip("CodeAgenda")
+        self.icon = load_icon()
+        self.qt.setWindowIcon(self.icon)  # 兜底：未单独设图标的窗口也显示日历图标，而不是 pythonw.exe 的默认图标
+        self.tray = QSystemTrayIcon(self.icon); self.tray.setToolTip("CodeAgenda")
         self.log_window = LogWindow(self.icon); self.timer = QTimer(); self.timer.timeout.connect(self.refresh_log); self.timer.start(250)
         self.toast = None
     def show_toast(self, title, message, glyph="✓", accent="#34c759"):
