@@ -389,7 +389,15 @@ def list_submissions():
         rows = db.execute(
             'SELECT id, date, problem_key, created_at FROM submissions ORDER BY date ASC, created_at ASC'
         ).fetchall()
-    return jsonify({'submissions': [dict(r) for r in rows]})
+    daily_keys = {r['date']: problem_url_key(r['url'])
+                  for r in db.execute('SELECT date, url FROM daily_problems').fetchall()}
+    items = []
+    for row in rows:
+        item = dict(row)
+        daily_key = daily_keys.get(item['date'], '')
+        item['is_daily'] = int(bool(daily_key and problem_url_key(item['problem_key']) == daily_key))
+        items.append(item)
+    return jsonify({'submissions': items})
 
 
 @app.route('/api/submissions/<submission_id>', methods=['DELETE'])

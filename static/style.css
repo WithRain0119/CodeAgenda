@@ -160,6 +160,16 @@ h1.page-title {
 }
 .passed-item time { color: #57606a; font-variant-numeric: tabular-nums; }
 .passed-item a { color: #0969da; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.passed-item-main { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.passed-daily-tag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #2da44e;
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+}
 .passed-empty { color: #57606a; font-size: 13px; text-align: center; margin: 0; align-self: center; }
 
 .legend {

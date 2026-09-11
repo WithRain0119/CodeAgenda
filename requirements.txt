@@ -1,3 +1,2 @@
 Flask
-Pillow
-pystray
+PyQt6

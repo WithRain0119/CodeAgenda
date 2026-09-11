@@ -75,8 +75,17 @@ function renderPassedList() {
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
     link.textContent = title || target;
+    var main = document.createElement('div');
+    main.className = 'passed-item-main';
+    main.appendChild(link);
+    if (item.is_daily === 1) { // 后端按 URL 判定：这道就是当天的每日一题
+      var tag = document.createElement('span');
+      tag.className = 'passed-daily-tag';
+      tag.textContent = '每日一题';
+      main.appendChild(tag);
+    }
     row.appendChild(time);
-    row.appendChild(link);
+    row.appendChild(main);
     list.appendChild(row);
   });
 }

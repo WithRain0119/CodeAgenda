@@ -1,196 +1,133 @@
 # -*- coding: utf-8 -*-
-"""CodeAgenda Windows tray launcher.
-
-The tray process owns the Flask child process, so there is one lifecycle and
-one single-instance lock for the whole application.
-"""
+"""CodeAgenda tray launcher and Qt log window."""
 from __future__ import annotations
-
-import os
-import subprocess
-import sys
-import threading
-import tkinter as tk
+import ctypes, os, subprocess, sys, threading, webbrowser
 from pathlib import Path
-from tkinter import ttk
-import webbrowser
-
-import pystray
-from PIL import Image, ImageDraw
+from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtGui import QCursor, QFont, QGuiApplication, QIcon
+from PyQt6.QtWidgets import QApplication, QLabel, QMainWindow, QMenu, QPlainTextEdit, QSystemTrayIcon, QVBoxLayout, QWidget
 
 try:
     import msvcrt
-except ImportError:  # pragma: no cover - this launcher targets Windows
+except ImportError:
     msvcrt = None
-
 
 BASE_DIR = Path(__file__).resolve().parent
 LOCK_PATH = BASE_DIR / ".codeagenda.lock"
 WEB_URL = os.environ.get("CODEAGENDA_URL", "http://127.0.0.1:5000")
+ICON_PATH = BASE_DIR / "static" / "favicon.svg"
 
 
 class SingleInstance:
-    def __init__(self, path: Path):
-        self.path = path
-        self.handle = None
-
-    def acquire(self) -> bool:
-        if msvcrt is None:
-            return True
+    def __init__(self, path): self.path, self.handle = path, None
+    def acquire(self):
+        if msvcrt is None: return True
         self.handle = open(self.path, "a+")
         try:
             self.handle.seek(0)
-            if not self.handle.read(1):
-                self.handle.write("0")
-                self.handle.flush()
+            if not self.handle.read(1): self.handle.write("0"); self.handle.flush()
         except OSError:
-            # A running instance may hold the file exclusively on Windows.
-            self.handle.close()
-            self.handle = None
-            return False
+            self.handle.close(); self.handle = None; return False
         self.handle.seek(0)
-        try:
-            msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
+        try: msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError:
-            self.handle.close()
-            self.handle = None
-            return False
-        self.handle.seek(0)
-        self.handle.truncate()
-        self.handle.write(str(os.getpid()))
-        self.handle.flush()
-        return True
-
+            self.handle.close(); self.handle = None; return False
+        self.handle.seek(0); self.handle.truncate(); self.handle.write(str(os.getpid())); self.handle.flush(); return True
     def release(self):
-        if self.handle is None:
-            return
-        try:
-            self.handle.seek(0)
-            msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
-        finally:
-            self.handle.close()
-            self.handle = None
+        if self.handle is not None:
+            try: self.handle.seek(0); msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+            finally: self.handle.close(); self.handle = None
 
 
-def make_icon() -> Image.Image:
-    """Draw the same blue/white calendar motif used by static/favicon.svg."""
-    image = Image.new("RGBA", (64, 64), (9, 105, 218, 255))
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((13, 17, 51, 51), radius=5, fill="white")
-    draw.line((13, 27, 51, 27), fill=(9, 105, 218), width=4)
-    draw.line((22, 12, 22, 22), fill="white", width=5)
-    draw.line((42, 12, 42, 22), fill="white", width=5)
-    for x, y in ((20, 33), (29, 33), (38, 33), (20, 42), (29, 42)):
-        draw.rounded_rectangle((x, y, x + 6, y + 6), radius=1, fill=(9, 105, 218))
-    return image
+class LogWindow(QMainWindow):
+    def __init__(self, icon):
+        super().__init__(); self.setWindowTitle("CodeAgenda 日志"); self.setWindowIcon(icon); self.resize(760, 480); self.setMinimumSize(520, 320)
+        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint | Qt.WindowType.WindowCloseButtonHint | Qt.WindowType.WindowMinimizeButtonHint)
+        self.setStyleSheet("QMainWindow{background:#f5f5f7;} QLabel{color:#1d1d1f;} QPlainTextEdit{background:#fff;color:#1d1d1f;border:1px solid #e5e5e7;border-radius:12px;padding:12px;selection-background-color:#cfe3ff;} QScrollBar:vertical{width:10px;background:transparent;margin:4px;} QScrollBar::handle:vertical{background:#c7c7cc;border-radius:5px;min-height:30px;}")
+        title = QLabel("运行日志"); title.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        self.text = QPlainTextEdit(); self.text.setReadOnly(True); self.text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        layout = QVBoxLayout(); layout.setContentsMargins(24, 22, 24, 24); layout.setSpacing(14); layout.addWidget(title); layout.addWidget(self.text)
+        body = QWidget(); body.setLayout(layout); self.setCentralWidget(body)
+    def closeEvent(self, event): event.ignore(); self.hide()
 
 
 class TrayApp:
     def __init__(self):
-        self.instance = SingleInstance(LOCK_PATH)
-        self.process = None
-        self.log_lines = []
-        self.log_lock = threading.Lock()
-        self.root = tk.Tk()
-        self.root.withdraw()
-        self.log_window = None
-        self.log_text = None
-        self.icon = pystray.Icon("CodeAgenda", make_icon(), "CodeAgenda")
-
-    def append_log(self, line: str):
+        self.instance = SingleInstance(LOCK_PATH); self.process = None; self.log_lines = []; self.log_lock = threading.Lock()
+        self.qt = QApplication(sys.argv); self.qt.setQuitOnLastWindowClosed(False)
+        self.icon = QIcon(str(ICON_PATH)); self.tray = QSystemTrayIcon(self.icon); self.tray.setToolTip("CodeAgenda")
+        self.log_window = LogWindow(self.icon); self.timer = QTimer(); self.timer.timeout.connect(self.refresh_log); self.timer.start(250)
+    def debug(self, message):
+        try:
+            with open(BASE_DIR / "tray_debug.log", "a", encoding="utf-8") as file:
+                file.write(message + "\n"); file.flush()
+        except OSError:
+            pass
+    def append_log(self, line):
         line = line.rstrip("\r\n")
-        if not line:
-            return
-        with self.log_lock:
-            self.log_lines.append(line)
-        if self.log_text is not None and self.log_window is not None and self.log_window.winfo_exists():
-            self.root.after(0, self._refresh_log)
-
-    def _read_output(self, stream):
-        for line in iter(stream.readline, ""):
-            self.append_log(line)
+        if line:
+            with self.log_lock: self.log_lines.append(line)
+    def read_output(self, stream):
+        for line in iter(stream.readline, ""): self.append_log(line)
         stream.close()
-
     def start_backend(self):
-        command = [sys.executable, "-u", str(BASE_DIR / "app.py")]
-        self.append_log("CodeAgenda 后端启动: " + " ".join(command))
-        environment = os.environ.copy()
-        environment["PYTHONIOENCODING"] = "utf-8"
-        self.process = subprocess.Popen(
-            command, cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace", env=environment,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        threading.Thread(target=self._read_output, args=(self.process.stdout,), daemon=True).start()
+        command = [sys.executable, "-u", str(BASE_DIR / "app.py")]; self.append_log("CodeAgenda 后端启动: " + " ".join(command))
+        env = os.environ.copy(); env["PYTHONIOENCODING"] = "utf-8"
+        self.process = subprocess.Popen(command, cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        threading.Thread(target=self.read_output, args=(self.process.stdout,), daemon=True).start()
+    def refresh_log(self):
+        with self.log_lock: content = "\n".join(self.log_lines)
+        if self.log_window.text.toPlainText() != content:
+            self.log_window.text.setPlainText(content); bar = self.log_window.text.verticalScrollBar(); bar.setValue(bar.maximum())
+    def show_logs(self):
+        self.debug("show_logs called")
+        try:
+            self.debug("window=%r visible=%r" % (self.log_window, self.log_window.isVisible()))
+            self.log_window.showNormal()
+            screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+            area = screen.availableGeometry()
+            frame = self.log_window.frameGeometry()
+            frame.moveCenter(area.center())
+            self.log_window.move(frame.topLeft())
+            self.log_window.raise_(); self.log_window.activateWindow(); self.refresh_log()
+            hwnd = int(self.log_window.winId())
+            ctypes.windll.user32.ShowWindow(hwnd, 9)
+            ctypes.windll.user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0047)
+            ctypes.windll.user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0047)
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+            QTimer.singleShot(0, lambda: self._present_log_window(hwnd))
+            self.debug("show_logs completed visible=%r hwnd=%r geometry=%r" % (self.log_window.isVisible(), hwnd, self.log_window.geometry().getRect()))
+        except Exception as error:
+            self.debug("show_logs error: %r" % (error,))
+            self.tray.showMessage("CodeAgenda", "日志窗口打开失败，请查看 tray_debug.log", QSystemTrayIcon.MessageIcon.Critical, 5000)
 
-    def _refresh_log(self):
-        if self.log_text is None:
-            return
-        with self.log_lock:
-            content = "\n".join(self.log_lines)
-        self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", "end")
-        self.log_text.insert("end", content)
-        self.log_text.see("end")
-        self.log_text.configure(state="disabled")
+    def _present_log_window(self, hwnd):
+        try:
+            self.log_window.showNormal(); self.log_window.raise_(); self.log_window.activateWindow()
+            ctypes.windll.user32.ShowWindow(hwnd, 9); ctypes.windll.user32.SetForegroundWindow(hwnd)
+            self.debug("deferred present visible=%r geometry=%r" % (self.log_window.isVisible(), self.log_window.geometry().getRect()))
+        except Exception as error:
+            self.debug("deferred present error: %r" % (error,))
 
-    def show_logs(self, *_):
-        self.root.after(0, self._show_logs_window)
-
-    def _show_logs_window(self):
-        if self.log_window is not None and self.log_window.winfo_exists():
-            self.log_window.deiconify()
-            self.log_window.lift()
-            self._refresh_log()
-            return
-        win = self.log_window = tk.Toplevel(self.root)
-        win.title("CodeAgenda 日志")
-        win.geometry("680x420")
-        win.minsize(480, 260)
-        win.configure(bg="#f5f5f7")
-        win.protocol("WM_DELETE_WINDOW", win.withdraw)
-        frame = ttk.Frame(win, padding=16)
-        frame.pack(fill="both", expand=True)
-        ttk.Label(frame, text="运行日志", font=("Segoe UI", 16, "bold")).pack(anchor="w", pady=(0, 10))
-        text_frame = ttk.Frame(frame)
-        text_frame.pack(fill="both", expand=True)
-        self.log_text = tk.Text(text_frame, wrap="word", bg="#ffffff", fg="#1d1d1f", relief="flat", borderwidth=0,
-                                font=("Consolas", 10), padx=12, pady=10, state="disabled")
-        scroll = ttk.Scrollbar(text_frame, command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=scroll.set)
-        self.log_text.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-        self._refresh_log()
-
-    def open_web(self, *_):
-        webbrowser.open(WEB_URL)
-
-    def stop(self, *_):
+    def on_logs_action(self, checked=False):
+        self.debug("logs QAction triggered checked=%r" % checked)
+        self.show_logs()
+    def open_web(self): webbrowser.open(WEB_URL)
+    def stop(self):
         if self.process is not None and self.process.poll() is None:
-            self.append_log("正在关闭 CodeAgenda 后端...")
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-        self.icon.stop()
-        self.instance.release()
-        self.root.after(0, self.root.destroy)
-
+            self.append_log("正在关闭 CodeAgenda 后端..."); self.process.terminate()
+            try: self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired: self.process.kill()
+        self.tray.hide(); self.instance.release(); self.qt.quit()
     def run(self):
-        if not self.instance.acquire():
-            return False
-        self.start_backend()
-        menu = pystray.Menu(
-            pystray.MenuItem("打开前端网页", self.open_web, default=True),
-            pystray.MenuItem("打开日志界面", self.show_logs),
-            pystray.MenuItem("关闭程序", self.stop),
-        )
-        self.icon.menu = menu
-        threading.Thread(target=self.icon.run, daemon=True).start()
-        self.root.mainloop()
-        return True
+        if not self.instance.acquire(): return False
+        self.start_backend(); menu = QMenu()
+        web_action = menu.addAction("打开前端网页"); web_action.triggered.connect(lambda checked=False: self.open_web())
+        logs_action = menu.addAction("打开日志界面"); logs_action.triggered.connect(self.on_logs_action)
+        self.debug("logs QAction connected")
+        menu.addSeparator()
+        close_action = menu.addAction("关闭程序"); close_action.triggered.connect(lambda checked=False: self.stop())
+        self.tray.setContextMenu(menu); self.tray.activated.connect(lambda reason: self.open_web() if reason == QSystemTrayIcon.ActivationReason.Trigger else None); self.tray.show(); self.qt.exec(); return True
 
 
-if __name__ == "__main__":
-    TrayApp().run()
+if __name__ == "__main__": TrayApp().run()
