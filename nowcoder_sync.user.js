@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CodeAgenda - 牛客刷题同步
 // @namespace    codeagenda.local
-// @version      1.3.0
+// @version      1.4.0
 // @description  自动同步牛客每日一题和 Accepted 提交到本地 CodeAgenda
 // @match        https://www.nowcoder.com/*
 // @grant        GM_xmlhttpRequest
@@ -236,24 +236,84 @@
   }
   */ // END DEBUG PANEL
 
-  function acSignal() {
-    var successRe = /(答案正确|提交成功|恭喜你通过本题|通过本题|用例通过|全部通过|测试通过|Accepted|\bAC\b|运行成功|编译成功)/i;
-    // 牛客通过弹窗由自定义组件动态插入，优先从页面可见文本整体查找精确成功短语。
-    var pageText = document.body ? (document.body.innerText || '') : '';
-    var debugPanel = document.getElementById('codeagenda-debug-panel');
-    if (debugPanel && debugPanel.innerText) pageText = pageText.replace(debugPanel.innerText, '');
-    var pageMatch = pageText.match(successRe);
-    if (pageMatch && !/(通过率|提交次数|历史通过|通过人数)/i.test(pageMatch[0])) return pageMatch[0];
+  // 判题通过的说法。只保留“判题结果”本身：
+  // “提交成功 / 运行成功 / 编译成功 / 用例通过 / 全部通过”只说明提交或自测这个动作成功了，
+  // 并不代表本题被判通过——把它们当成通过，就会出现“提交一次、不管过没过都被记成通过”。
+  var successRe = /(答案正确|恭喜你通过本题|通过本题|Accepted)/i;
+  // 判题失败的说法：本次提交出现它，这次提交就作废，之后页面上再冒出什么“通过”字样也不计入。
+  // 英文判决一律要求带空格，避免误伤 timeLimit / wrongAnswer 这类字段名。
+  var failRe = /(答案错误|部分正确|编译错误|运行错误|运行超时|内存超限|格式错误|段错误|浮点错误|返回非零|异常退出|多种错误|内部错误|Wrong\s+Answer|Compile\s+Error|Runtime\s+Error|Time\s+Limit\s+Exceeded|Memory\s+Limit\s+Exceeded)/i;
+  // 还在判题中的说法：没出结果前不下结论。
+  var pendingRe = /(等待评测|正在评测|评测中|判题中|Pending|Judging)/i;
+
+  // 只看元素自身的文本节点。祖先容器的文本会随子节点变化（比如在代码编辑器里敲字），
+  // 拿它当依据会把“页面上早就挂着的历史通过记录”当成刚出现的提示。
+  function ownText(element) {
+    var text = '';
+    for (var i = 0; i < element.childNodes.length; i += 1) {
+      if (element.childNodes[i].nodeType === 3) text += element.childNodes[i].nodeValue;
+    }
+    return text.trim();
+  }
+
+  // 一趟走完页面，把承载判题提示的元素按“通过 / 失败 / 判题中”分好类。
+  function scanSignals() {
     var nodes = document.querySelectorAll('body *');
+    var found = { pass: [], fail: [], pending: [] };
     for (var i = 0; i < nodes.length; i += 1) {
       if (isIgnoredNode(nodes[i]) || !isVisible(nodes[i])) continue;
-      var text = textOf(nodes[i]);
-      if (/(通过率|提交次数|历史通过|通过人数)/i.test(text)) continue;
-      var match = text.match(successRe);
-      if (match) {
-        var start = Math.max(0, match.index - 40);
-        return text.slice(start, start + 160);
+      var text = ownText(nodes[i]);
+      if (!text || /(通过率|提交次数|历史通过|通过人数)/i.test(text)) continue;
+      // 失败优先：同一段文本既像通过又像失败时按失败处理，宁可漏记也不记错。
+      var kind = failRe.test(text) ? 'fail' : (pendingRe.test(text) ? 'pending' : (successRe.test(text) ? 'pass' : ''));
+      if (!kind) continue;
+      var match = text.match(kind === 'pass' ? successRe : (kind === 'fail' ? failRe : pendingRe));
+      found[kind].push({ node: nodes[i], text: text, signal: normalizeSignal(match[0]) });
+    }
+    return found;
+  }
+
+  // 一次“等待判题结果”的过程：点提交时先把页面上已有的提示记成基线，
+  // 只有基线之后新出现的提示才算这次提交的结果。题目以前通过过时，牛客页面
+  // （我的提交 / 提交记录）里一直挂着“答案正确”，旧实现会把它当成刚刚通过。
+  var attemptBaseline = null;
+  var attemptFailed = false;
+
+  function baselined(item) {
+    return !!attemptBaseline && attemptBaseline.get(item.node) === item.text;
+  }
+
+  function beginAttempt() {
+    attemptBaseline = new Map();
+    attemptFailed = false;
+    var current = scanSignals();
+    var items = current.pass.concat(current.fail, current.pending);
+    for (var i = 0; i < items.length; i += 1) attemptBaseline.set(items[i].node, items[i].text);
+    submissionArmed = true;
+    lastSubmitAt = new Date().toLocaleTimeString();
+    watchForSuccess();
+  }
+
+  // 本次提交的通过提示：基线里就有的、还在判题的、已经判失败的一律不算。
+  function acSignal() {
+    if (!attemptBaseline) return '';
+    var current = scanSignals();
+    var i;
+    for (i = 0; i < current.fail.length; i += 1) {
+      if (!baselined(current.fail[i]) && !attemptFailed) {
+        attemptFailed = true;
+        debug('本次提交已判失败:', current.fail[i].signal);
       }
+    }
+    if (attemptFailed) return '';
+    for (i = 0; i < current.pending.length; i += 1) {
+      if (!baselined(current.pending[i])) {
+        debug('本次提交还在判题中:', current.pending[i].signal);
+        return '';
+      }
+    }
+    for (i = 0; i < current.pass.length; i += 1) {
+      if (!baselined(current.pass[i])) return current.pass[i].signal;
     }
     return '';
   }
@@ -348,9 +408,9 @@
   function syncAccepted(signal) {
     var now = Date.now();
     lastWatchSignal = signal || '';
-    lastGateInfo = 'ready=' + acReady + ', armed=' + submissionArmed + ', signal=' + (!!signal) + ', inFlight=' + acSyncInFlight + ', cooldown=' + (now - lastAcSyncAt < AC_COOLDOWN_MS);
+    lastGateInfo = 'ready=' + acReady + ', armed=' + submissionArmed + ', signal=' + (!!signal) + ', inFlight=' + acSyncInFlight + ', cooldown=' + (now - lastAcSyncAt < AC_COOLDOWN_MS) + ', failed=' + attemptFailed;
     debug('AC 检查:', lastGateInfo, signal || '(无成功提示)');
-    if (!acReady || !submissionArmed || !signal || acSyncInFlight || now - lastAcSyncAt < AC_COOLDOWN_MS) return;
+    if (!acReady || !submissionArmed || !signal || acSyncInFlight || attemptFailed || now - lastAcSyncAt < AC_COOLDOWN_MS) return;
     var key = normalizeSignal(signal);
     var problem = today() + '|' + problemKey();
     var eventKey = problem + '|' + key;
@@ -397,10 +457,14 @@
     debug('开始轮询成功结果（最多 15 秒）');
   }
 
+  // 网络探针读的是接口原始响应，比页面文本可靠；但同一个响应里可能同时带着
+  // 题目以前通过的状态、历史提交列表、本次提交还在判题等：只要响应里出现失败或
+  // 未出结果的迹象，就绝不能当成“这次提交通过了”。
   function installNetworkProbe() {
     var code = '(function(){' +
       'if(window.__codeAgendaProbe)return;window.__codeAgendaProbe=1;' +
-      'function ok(s){return /(恭喜你通过本题|通过全部用例|答案正确|Accepted|"isResultRight"\\s*:\\s*true|"rightHundredRate"\\s*:\\s*100)/i.test(s||"");}' +
+      'function bad(s){return /(答案错误|部分正确|编译错误|运行错误|运行超时|内存超限|格式错误|段错误|浮点错误|返回非零|异常退出|多种错误|内部错误|等待评测|正在评测|评测中|判题中|Wrong\\s+Answer|Compile\\s+Error|Runtime\\s+Error|"isResultRight"\\s*:\\s*false)/i.test(s||"");}' +
+      'function ok(s){return !!s&&!bad(s)&&/(恭喜你通过本题|通过全部用例|答案正确|Accepted|"isResultRight"\\s*:\\s*true|"rightHundredRate"\\s*:\\s*100)/i.test(s);}' +
       'function send(s){try{window.postMessage({source:"codeagenda-probe",type:"accepted",signal:String(s).match(/恭喜你通过本题|通过全部用例|答案正确|Accepted|isResultRight|rightHundredRate/i)[0]},"*")}catch(e){}}' +
       'var of=window.fetch; if(of)window.fetch=function(){return of.apply(this,arguments).then(function(r){try{r.clone().text().then(function(t){if(ok(t))send(t)})}catch(e){}return r})};' +
       'var os=XMLHttpRequest.prototype.open, od=XMLHttpRequest.prototype.send;' +
@@ -465,18 +529,14 @@
       }
       var clickedClass = event.target && event.target.closest ? event.target.closest('.btn-submit, .confirm-btn, .submit-btnbox, [class*="run-code"]') : null;
       if (clickedClass || /(提交代码|提交答案|提交|运行代码|运行|执行代码|submit|run)/i.test(text)) {
-        submissionArmed = true;
-        lastSubmitAt = new Date().toLocaleTimeString();
-        debug('检测到提交操作，等待成功结果:', text.trim().slice(0, 120));
-        watchForSuccess();
+        debug('检测到提交操作，等待判题结果:', text.trim().slice(0, 120));
+        beginAttempt();
       }
     }, true);
     document.addEventListener('keydown', function (event) {
       if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-        submissionArmed = true;
-        lastSubmitAt = new Date().toLocaleTimeString();
-        debug('检测到 Ctrl/Cmd+Enter 提交操作，等待成功结果');
-        watchForSuccess();
+        debug('检测到 Ctrl/Cmd+Enter 提交操作，等待判题结果');
+        beginAttempt();
       }
     }, true);
     setTimeout(function () {
