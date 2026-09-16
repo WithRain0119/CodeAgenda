@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CodeAgenda - 牛客刷题同步
 // @namespace    codeagenda.local
-// @version      1.4.0
+// @version      1.4.1
 // @description  自动同步牛客每日一题和 Accepted 提交到本地 CodeAgenda
 // @match        https://www.nowcoder.com/*
 // @grant        GM_xmlhttpRequest
@@ -509,6 +509,26 @@
     log('网络探针检测到牛客通过响应:', event.data.signal || '(success)');
     syncAccepted('network:' + (event.data.signal || 'accepted'));
   });
+  // 只有"提交"按钮才算一次判题。牛客的"运行/自测"按钮跑完样例后，结果面板同样会冒出
+  // "答案正确"，但那只是样例跑通、不是本题判通过；把它当成一次提交，就会出现
+  // "自测对了就记成通过、随后提交判错也改不回来"。
+  var NOT_SUBMIT_RE = /(运行|自测|执行代码|调试|我的提交|提交记录|提交次数|历史提交)/i;
+  var SUBMIT_TEXT_RE = /(保存并提交|提交代码|提交答案|提交测评|提交)/i;
+  var SUBMIT_CLASS_RE = /(btn-submit|submit-btnbox|submit-btn)/i;
+
+  // 从点击处向上找几层，判断这次点击是不是"提交"。牛客部分版本用 div/span 当按钮，所以
+  // 类名和文本都要看；碰到运行、自测、提交记录这类控件一律不算。
+  function clickedSubmitControl(element) {
+    for (var level = 0; element && level < 8; level += 1, element = element.parentElement) {
+      var cls = element.className && typeof element.className === 'string' ? element.className : '';
+      var label = textOf(element);
+      if (label.length > 80) label = '';
+      if (NOT_SUBMIT_RE.test(cls) || NOT_SUBMIT_RE.test(label)) return null;
+      if (SUBMIT_CLASS_RE.test(cls) || SUBMIT_TEXT_RE.test(label)) return element;
+    }
+    return null;
+  }
+
   function start() {
     if (!document.body) return;
     // installDebugPanel(); // Debug panel disabled for normal use.
@@ -516,22 +536,10 @@
     observer.observe(document.body, { subtree: true, childList: true, characterData: true });
     acReady = true;
     document.addEventListener('click', function (event) {
-      if (event.target && event.target.closest && event.target.closest('#codeagenda-debug-panel')) return;
-      var target = event.target;
-      var text = '';
-      // 牛客部分版本使用 div/span 作为提交按钮，向上检查几层可点击容器。
-      for (var level = 0; target && level < 8; level += 1, target = target.parentElement) {
-        var candidate = textOf(target);
-        if (candidate && candidate.length <= 80) text += ' ' + candidate;
-        var cls = target.className && typeof target.className === 'string' ? target.className : '';
-        if (/(btn-submit|confirm-btn|submit-btnbox|run-code|runCode)/i.test(cls) ||
-            /(提交代码|提交答案|提交|运行代码|运行|执行代码|submit|run)/i.test(candidate || '')) break;
-      }
-      var clickedClass = event.target && event.target.closest ? event.target.closest('.btn-submit, .confirm-btn, .submit-btnbox, [class*="run-code"]') : null;
-      if (clickedClass || /(提交代码|提交答案|提交|运行代码|运行|执行代码|submit|run)/i.test(text)) {
-        debug('检测到提交操作，等待判题结果:', text.trim().slice(0, 120));
-        beginAttempt();
-      }
+      var control = clickedSubmitControl(event.target);
+      if (!control) return;
+      debug('检测到提交操作，等待判题结果:', textOf(control).slice(0, 120));
+      beginAttempt();
     }, true);
     document.addEventListener('keydown', function (event) {
       if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
