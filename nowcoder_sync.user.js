@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CodeAgenda - 牛客刷题同步
 // @namespace    codeagenda.local
-// @version      1.4.1
+// @version      1.6.0
 // @description  自动同步牛客每日一题和 Accepted 提交到本地 CodeAgenda
 // @match        https://www.nowcoder.com/*
 // @grant        GM_xmlhttpRequest
@@ -21,7 +21,6 @@
   var API_BASE = 'http://127.0.0.1:5000';
   var DAILY_MARKER_KEY = 'codeagenda_daily_synced_v2';
   var AC_COOLDOWN_MS = 5000;
-  var seenAcSignals = new Set();
   var lastAcSyncAt = 0;
   var acSyncInFlight = false;
   var dailySyncInFlight = false;
@@ -54,6 +53,116 @@
     var args = Array.prototype.slice.call(arguments);
     args.unshift('[CodeAgenda debug]');
     console.debug.apply(console, args);
+  }
+
+  // ---- 判定链路追踪 ----------------------------------------------------------
+  // 目的：下次再出现"没通过却被记成通过"时，日志里要能还原出是哪一次点击、哪一条接口响应、
+  // 在点击之后多少毫秒把它判成了通过。所以只记录判定链路（点击归属、判题提示变化、
+  // 探针命中与否决、记账请求与结果），不记录每 150ms 的轮询和每次 DOM 扫描，免得刷爆日志窗口。
+  // 日志经 /api/client-log 落到后端 stdout，也就是托盘日志窗口和导出的 log/runtime.log。
+  var SCRIPT_VERSION = '1.6.0';
+  var TRACE_PATH = '/api/client-log';
+  var TRACE_FLUSH_MS = 1500;   // 攒够时间就发，避免一次判题拆成几十个请求
+  var TRACE_BATCH_MAX = 20;
+  var TRACE_RING_MAX = 400;    // 内存里留最近若干条，供 syncHelper.dumpLog() 取用
+  var traceBootAt = Date.now();
+  var traceSeq = 0;
+  var tracePending = [];
+  var traceTimer = null;
+  var traceRing = [];
+
+  function clip(value, limit) {
+    var text = String(value === undefined || value === null ? '' : value).replace(/\s+/g, ' ').trim();
+    limit = limit || 120;
+    return text.length > limit ? text.slice(0, limit) + '…（共' + text.length + '字）' : text;
+  }
+
+  // 元素只记标签和 class：日志里认的是"提示挂在哪个容器上"，不是整段 innerHTML。
+  function nodeTag(element) {
+    if (!element || !element.tagName) return '(无元素)';
+    var cls = element.className && typeof element.className === 'string'
+      ? '.' + clip(element.className, 60).replace(/ /g, '.') : '';
+    return '<' + element.tagName.toLowerCase() + cls + '>';
+  }
+
+  function nodeInfo(element) {
+    return nodeTag(element) + '“' + clip(element && (element.innerText || element.textContent), 40) + '”';
+  }
+
+  // 距离"点击提交"的毫秒数。误报多半是时序问题（响应先到、判错后渲染），所以每条日志都要带它。
+  function sinceClick() {
+    return attemptStartedAt ? (Date.now() - attemptStartedAt) + 'ms' : '本次页面还没有提交动作';
+  }
+
+  // 带自增序号与开机偏移：多个异步来源（DOM 扫描 / 接口探针 / 记账请求）也能排出真实先后。
+  // 整体包在 try 里：日志出问题绝不能连累判题记账——记账失败可以补，误判通过却删不回来。
+  function trace(event, fields) {
+    try {
+      var parts = [];
+      fields = fields || {};
+      for (var name in fields) {
+        if (fields[name] === undefined || fields[name] === null || fields[name] === '') continue;
+        parts.push(name + '=' + fields[name]);
+      }
+      var line = '#' + (++traceSeq) + ' +' + (Date.now() - traceBootAt) + 'ms ' + event +
+        (parts.length ? ' ' + parts.join(' ') : '');
+      traceRing.push(line);
+      if (traceRing.length > TRACE_RING_MAX) traceRing.splice(0, traceRing.length - TRACE_RING_MAX);
+      tracePending.push(line);
+      if (tracePending.length >= TRACE_BATCH_MAX) flushTrace();
+      else if (!traceTimer) traceTimer = setTimeout(flushTrace, TRACE_FLUSH_MS);
+    } catch (e) {
+      try { console.warn('[CodeAgenda] 写日志失败，已忽略:', e); } catch (ignored) {}
+    }
+  }
+
+  // 上报失败（后端没起、或还停在没有这个接口的旧版本）必须能看出来，否则"日志里什么都没有"
+  // 会被误当成"脚本没跑"。失败就退回队列等下一次补发，控制台也提示前几次。
+  var TRACE_RETRY_MS = 10000;
+  var traceSendErrors = 0;
+
+  function noteTraceSendError(reason) {
+    traceSendErrors += 1;
+    if (traceSendErrors > 3) return;
+    try {
+      console.warn('[CodeAgenda] 判定链路日志没能写进日志窗口（' + reason + '，第 ' + traceSendErrors + ' 次）。'
+        + '常见原因是后端还没重启到新版；日志已暂存在页面内存里，可用 window.syncHelper.dumpLog() 取出。');
+    } catch (e) { /* 控制台都没有就算了 */ }
+  }
+
+  function restorePending(events) {
+    var lines = [];
+    for (var i = 0; i < events.length; i += 1) {
+      if (events[i] && events[i].line) lines.push(events[i].line);
+    }
+    if (!lines.length) return;
+    // 队列有上限：后端长时间连不上时只留最近这些，免得页面内存被日志吃光。
+    tracePending = lines.concat(tracePending).slice(-TRACE_RING_MAX);
+    if (!traceTimer) traceTimer = setTimeout(flushTrace, TRACE_RETRY_MS);
+  }
+
+  function flushTrace() {
+    if (traceTimer) { clearTimeout(traceTimer); traceTimer = null; }
+    if (!tracePending.length) return;
+    var events = tracePending.splice(0, tracePending.length).map(function (line) { return { line: line }; });
+    try {
+      // 不走 request()：这条请求不该顶掉调试面板里的"最近一次请求"，也不参与判题判定。
+      GM_xmlhttpRequest({
+        method: 'POST',
+        url: API_BASE + TRACE_PATH,
+        headers: { 'Content-Type': 'application/json' },
+        data: JSON.stringify({ events: events }),
+        timeout: 8000,
+        onload: function (response) {
+          if (response.status < 200 || response.status >= 300) {
+            noteTraceSendError('后端返回 HTTP ' + response.status);
+            restorePending(events);
+          }
+        },
+        onerror: function () { noteTraceSendError('连不上后端'); restorePending(events); },
+        ontimeout: function () { noteTraceSendError('上报超时'); restorePending(events); }
+      });
+    } catch (e) { /* 日志送不出去不能影响正常同步 */ }
   }
 
   function today() {
@@ -172,7 +281,7 @@
       lastGateInfo: lastGateInfo,
       dailyDebug: dailyDebug,
       lastProbeSignal: lastProbeSignal,
-      seenSignals: Array.from(seenAcSignals)
+      traceTail: traceRing.slice(-10)
     };
     console.table(state);
     log('调试状态:', state);
@@ -278,20 +387,57 @@
   // （我的提交 / 提交记录）里一直挂着“答案正确”，旧实现会把它当成刚刚通过。
   var attemptBaseline = null;
   var attemptFailed = false;
+  var attemptStartedAt = 0;
+  var attemptUrl = '';
+  var lastSignalNote = '';
 
   function baselined(item) {
     return !!attemptBaseline && attemptBaseline.get(item.node) === item.text;
   }
 
-  function beginAttempt() {
+  function beginAttempt(source) {
+    // 先记下重置前的状态：这次点击之前武装/判错是不是还挂着，决定误报发生时的现场怎么解释。
+    var wasArmed = submissionArmed;
+    var wasFailed = attemptFailed;
     attemptBaseline = new Map();
     attemptFailed = false;
+    lastSignalNote = '';
+    attemptStartedAt = Date.now();
+    attemptUrl = location.href;
     var current = scanSignals();
     var items = current.pass.concat(current.fail, current.pending);
     for (var i = 0; i < items.length; i += 1) attemptBaseline.set(items[i].node, items[i].text);
+    var known = [];
+    var collect = function (kind, list) {
+      for (var j = 0; j < list.length; j += 1) {
+        known.push(kind + ':' + nodeTag(list[j].node) + '“' + clip(list[j].text, 40) + '”');
+      }
+    };
+    collect('通过', current.pass);
+    collect('失败', current.fail);
+    collect('判题中', current.pending);
     submissionArmed = true;
     lastSubmitAt = new Date().toLocaleTimeString();
+    // 基线里已经挂着"通过"是典型的误报来源（题目以前通过过），单独标出来，别混在一长串基线里。
+    // "开始前是否已武装"同样关键：上一次提交如果既没判错也没记账，武装状态会一直挂着，
+    // 之后页面上任何通过字样都会算到这道题上。
+    trace('开始等待判题', {
+      触发: source,
+      题目: problemKey(),
+      基线里的提示: known.length ? known.join(' | ') : '（页面上没有任何判题提示）',
+      基线里已有通过提示: current.pass.length ? '是' : '否',
+      开始前是否已武装: wasArmed ? '是（上次提交没结账，武装状态一直挂着）' : '否',
+      开始前是否已判错: wasFailed ? '是' : '否'
+    });
     watchForSuccess();
+  }
+
+  // 页面上判题提示的变化只记一次，否则每 150ms 的轮询会把同一行刷几十遍。
+  function noteSignal(kind, item) {
+    var key = kind + '|' + item.text;
+    if (key === lastSignalNote) return;
+    lastSignalNote = key;
+    trace('判题提示出现', { 类型: kind, 提示: clip(item.text, 80), 元素: nodeTag(item.node), 距点击: sinceClick() });
   }
 
   // 本次提交的通过提示：基线里就有的、还在判题的、已经判失败的一律不算。
@@ -302,18 +448,27 @@
     for (i = 0; i < current.fail.length; i += 1) {
       if (!baselined(current.fail[i]) && !attemptFailed) {
         attemptFailed = true;
+        trace('本次提交判为失败', {
+          提示: clip(current.fail[i].text, 80),
+          元素: nodeTag(current.fail[i].node),
+          距点击: sinceClick()
+        });
         debug('本次提交已判失败:', current.fail[i].signal);
       }
     }
     if (attemptFailed) return '';
     for (i = 0; i < current.pending.length; i += 1) {
       if (!baselined(current.pending[i])) {
+        noteSignal('判题中', current.pending[i]);
         debug('本次提交还在判题中:', current.pending[i].signal);
         return '';
       }
     }
     for (i = 0; i < current.pass.length; i += 1) {
-      if (!baselined(current.pass[i])) return current.pass[i].signal;
+      if (!baselined(current.pass[i])) {
+        noteSignal('通过', current.pass[i]);
+        return current.pass[i].signal;
+      }
     }
     return '';
   }
@@ -359,12 +514,14 @@
     if (!title || !url || key === trackerDailyKey) return;
     trackerDailyKey = key;
     log('发现 Tracker 今日每日一题:', title, url);
+    trace('发现今日每日一题', { 题名: title, 链接: url });
     request('POST', '/api/daily-problems', { date: today(), title: title, url: url }).then(function (data) {
       dailyDebug.result = 'Tracker 保存成功';
       debug('Tracker 每日一题保存响应:', data);
     }).catch(function (error) {
       trackerDailyKey = '';
       dailyDebug.error = error.message;
+      trace('保存每日一题失败', { 题名: title, 错误: clip(error.message, 120) });
       log('保存每日一题失败:', error.message);
     });
   }
@@ -379,10 +536,15 @@
       if (!p || canonicalUrl(p.url) !== currentProblemUrl()) {
         dailyDebug.match = '不匹配';
         dailyDebug.result = '';
+        trace('通过题不是今日每日一题', {
+          当前题目地址: currentProblemUrl(),
+          今日每日一题: p ? canonicalUrl(p.url) : '(未记录)'
+        });
         log('当前通过题不是今日每日一题:', currentProblemUrl(), p ? canonicalUrl(p.url) : '(未记录)');
         return false;
       }
       dailyDebug.match = '匹配';
+      trace('通过题就是今日每日一题', { 题名: p.title });
       // /api/submissions recalculates today's records row from details.db.
       // Do not write records.is_daily directly from the browser anymore.
       GM_setValue(DAILY_MARKER_KEY, today());
@@ -405,40 +567,83 @@
     dailySyncInFlight = false;
   }
 
-  function syncAccepted(signal) {
+  // source 只进日志：用来区分这次候选是页面扫描出来的，还是接口探针报上来的。
+  function syncAccepted(signal, source) {
     var now = Date.now();
     lastWatchSignal = signal || '';
     lastGateInfo = 'ready=' + acReady + ', armed=' + submissionArmed + ', signal=' + (!!signal) + ', inFlight=' + acSyncInFlight + ', cooldown=' + (now - lastAcSyncAt < AC_COOLDOWN_MS) + ', failed=' + attemptFailed;
     debug('AC 检查:', lastGateInfo, signal || '(无成功提示)');
-    if (!acReady || !submissionArmed || !signal || acSyncInFlight || attemptFailed || now - lastAcSyncAt < AC_COOLDOWN_MS) return;
+    if (!signal) return;
+    // 被拦下的候选也要留痕：误报往往就是"本该被拦、却没写清为什么"的那一条。
+    var blocked = '';
+    if (!acReady) blocked = '脚本还没就绪';
+    else if (!submissionArmed) blocked = '页面上没有点击提交';
+    else if (attemptFailed) blocked = '本次提交已经判为失败';
+    else if (acSyncInFlight) blocked = '上一次上报还没有返回';
+    else if (now - lastAcSyncAt < AC_COOLDOWN_MS) blocked = '距上次上报不足 ' + AC_COOLDOWN_MS + 'ms';
+    if (blocked) {
+      trace('通过候选被拦下', {
+        来源: source,
+        信号: clip(signal, 80),
+        原因: blocked,
+        距点击: sinceClick(),
+        门: lastGateInfo
+      });
+      return;
+    }
     var key = normalizeSignal(signal);
-    var problem = today() + '|' + problemKey();
-    var eventKey = problem + '|' + key;
-    // The local database is authoritative. Browser storage is not used to decide
-    // whether a problem was counted, so an old NowCoder submission can be counted
-    // when it is first submitted after CodeAgenda was installed.
-    if (seenAcSignals.has(eventKey)) return;
-    seenAcSignals.add(eventKey);
+    // 这里原本还有一层"本次页面加载内已经处理过这个结果"的内存去重（seenAcSignals）。
+    // 它和数据库无关，于是会出现：界面里删掉一条错记后，同一道题当天再通过一次会被它
+    // 悄悄挡掉、不上报（2026-09-19 那次"通过了但界面不显示"就是它）。
+    // 服务端的 submissions 表有 UNIQUE(date, problem_key)，重复提交会返回 duplicate:true，
+    // 幂等本来就由数据库保证，客户端不需要再记一份会过期的状态——去重交给服务端。
+    // 一次提交最多产生一条记录这件事，由下面的 armed/inFlight/cooldown 三个门负责。
     acSyncInFlight = true;
     if (successWatchTimer) { clearInterval(successWatchTimer); successWatchTimer = null; }
     lastAcSyncAt = now;
     lastSuccessSignal = key;
     lastSuccessAt = new Date().toLocaleTimeString();
     log('检测到代码提交成功:', key);
+    trace('判定通过并记账', {
+      来源: source,
+      信号: clip(key, 80),
+      题目: problemKey(),
+      距点击: sinceClick(),
+      门: lastGateInfo
+    });
     recordSubmission(problemKey()).then(function (result) {
       if (result.duplicate) log('该题今天已经计数，跳过重复提交');
+      trace('记账完成', {
+        题目: problemKey(),
+        结果: result.duplicate ? '今天已记过，未新增' : '新增一条通过记录',
+        当天计数: result.record ? result.record.count : '(无)',
+        // 开始等待判题时在别的地址上，却把这笔记到了当前题目上——记错题的典型信号。
+        判题开始时的地址: attemptUrl && attemptUrl !== location.href ? clip(attemptUrl, 160) : ''
+      });
       submissionArmed = false;
       return markDailyIfMatched().catch(function (error) { log('每日一题匹配失败:', error.message); return false; }).then(function () { return result; });
     }).catch(function (error) {
-      // 请求失败时允许后续相同结果重试。
-      seenAcSignals.delete(eventKey);
+      // 请求失败时不留下任何"已处理"标记，后续扫描会拿同一个结果重试（见函数开头的门）。
+      trace('记账请求失败', { 题目: problemKey(), 错误: clip(error.message, 120) });
       log('AC 同步失败:', error.message);
     }).then(function () { acSyncInFlight = false; });
   }
 
+  // 判题等待期间页面地址变了（SPA 路由、点了别的题目），这次结果就可能被记到别的题上。
+  // 地址变化本身很安静，只留这一条痕迹。
+  var lastSeenUrl = '';
+  function noteUrlChange() {
+    var url = location.href;
+    if (url === lastSeenUrl) return;
+    var previous = lastSeenUrl;
+    lastSeenUrl = url;
+    if (previous) trace('页面地址变化', { 从: clip(previous, 160), 到: clip(url, 160), 距点击: sinceClick() });
+  }
+
   function scan() {
+    noteUrlChange();
     syncTrackerDailyProblem();
-    syncAccepted(acSignal());
+    syncAccepted(acSignal(), '页面扫描');
   }
 
   function watchForSuccess() {
@@ -448,11 +653,18 @@
     successWatchTimer = setInterval(function () {
       watchAttempts += 1;
       if (Date.now() - started > 15000 || !submissionArmed) {
+        // 超时后没判错也不解除武装，之后页面上任何"通过"字样都还会算到这道题上——留个记号。
+        if (submissionArmed) {
+          trace('等待判题结果超时', {
+            轮询次数: watchAttempts,
+            备注: '脚本仍在等待提交结果，本次提交之后再出现的通过提示都会算到这道题上'
+          });
+        }
         clearInterval(successWatchTimer);
         successWatchTimer = null;
         return;
       }
-      syncAccepted(acSignal());
+      syncAccepted(acSignal(), '判题轮询');
     }, 150);
     debug('开始轮询成功结果（最多 15 秒）');
   }
@@ -460,17 +672,27 @@
   // 网络探针读的是接口原始响应，比页面文本可靠；但同一个响应里可能同时带着
   // 题目以前通过的状态、历史提交列表、本次提交还在判题等：只要响应里出现失败或
   // 未出结果的迹象，就绝不能当成“这次提交通过了”。
+  //
+  // 探针报上来的每条响应都要带接口地址和原文片段：判断误报的唯一线索就是"哪条接口的
+  // 响应里带着通过字样"，只报关键词根本看不出它属于哪次提交。被否决的响应（含通过字样
+  // 但同时有失败/评测中迹象）也要报，否则看不出"探针先报通过、随后页面才判错"的先后。
   function installNetworkProbe() {
-    var code = '(function(){' +
-      'if(window.__codeAgendaProbe)return;window.__codeAgendaProbe=1;' +
-      'function bad(s){return /(答案错误|部分正确|编译错误|运行错误|运行超时|内存超限|格式错误|段错误|浮点错误|返回非零|异常退出|多种错误|内部错误|等待评测|正在评测|评测中|判题中|Wrong\\s+Answer|Compile\\s+Error|Runtime\\s+Error|"isResultRight"\\s*:\\s*false)/i.test(s||"");}' +
-      'function ok(s){return !!s&&!bad(s)&&/(恭喜你通过本题|通过全部用例|答案正确|Accepted|"isResultRight"\\s*:\\s*true|"rightHundredRate"\\s*:\\s*100)/i.test(s);}' +
-      'function send(s){try{window.postMessage({source:"codeagenda-probe",type:"accepted",signal:String(s).match(/恭喜你通过本题|通过全部用例|答案正确|Accepted|isResultRight|rightHundredRate/i)[0]},"*")}catch(e){}}' +
-      'var of=window.fetch; if(of)window.fetch=function(){return of.apply(this,arguments).then(function(r){try{r.clone().text().then(function(t){if(ok(t))send(t)})}catch(e){}return r})};' +
-      'var os=XMLHttpRequest.prototype.open, od=XMLHttpRequest.prototype.send;' +
-      'XMLHttpRequest.prototype.open=function(m,u){this.__caUrl=u;return os.apply(this,arguments)};' +
-      'XMLHttpRequest.prototype.send=function(){this.addEventListener("load",function(){try{if(ok(this.responseText))send(this.responseText)}catch(e){}});return od.apply(this,arguments)};' +
-    '})()';
+    var code = [
+      '(function(){',
+      'if(window.__codeAgendaProbe)return;window.__codeAgendaProbe=1;',
+      'var sent={},rejected=0;',
+      'function bad(s){return /(答案错误|部分正确|编译错误|运行错误|运行超时|内存超限|格式错误|段错误|浮点错误|返回非零|异常退出|多种错误|内部错误|等待评测|正在评测|评测中|判题中|Wrong\\s+Answer|Compile\\s+Error|Runtime\\s+Error|"isResultRight"\\s*:\\s*false)/i.test(s||"");}',
+      'function ok(s){return !!s&&!bad(s)&&/(恭喜你通过本题|通过全部用例|答案正确|Accepted|"isResultRight"\\s*:\\s*true|"rightHundredRate"\\s*:\\s*100)/i.test(s);}',
+      'function kw(s){var m=String(s||"").match(/恭喜你通过本题|通过全部用例|答案正确|Accepted|isResultRight|rightHundredRate/i);return m?m[0]:"";}',
+      'function snip(s){var t=String(s||""),i=t.search(/恭喜你通过本题|通过全部用例|答案正确|Accepted|isResultRight|rightHundredRate/i);if(i<0)return t.slice(0,240);return t.slice(Math.max(0,i-80),i+200);}',
+      'function send(type,url,s){try{var k=type+"|"+String(url||"");sent[k]=(sent[k]||0)+1;if(sent[k]>8)return;if(type==="rejected"){rejected+=1;if(rejected>60)return;}window.postMessage({source:"codeagenda-probe",type:type,keyword:kw(s),url:String(url||""),snippet:snip(s)},"*")}catch(e){}}',
+      'function report(url,s){if(ok(s))send("accepted",url,s);else if(kw(s))send("rejected",url,s);}',
+      'var of=window.fetch; if(of)window.fetch=function(){var u=arguments[0];return of.apply(this,arguments).then(function(r){try{r.clone().text().then(function(t){report((r&&r.url)||u,t)})}catch(e){}return r})};',
+      'var os=XMLHttpRequest.prototype.open, od=XMLHttpRequest.prototype.send;',
+      'XMLHttpRequest.prototype.open=function(m,u){this.__caUrl=u;return os.apply(this,arguments)};',
+      'XMLHttpRequest.prototype.send=function(){var x=this;this.addEventListener("load",function(){try{report(x.__caUrl,x.responseText)}catch(e){}});return od.apply(this,arguments)};',
+      '})()'
+    ].join('');
     var script = document.createElement('script');
     script.textContent = code;
     var root = document.documentElement || document.head;
@@ -495,7 +717,10 @@
     mockDaily: function () { return updateTodayRecord(null, 1).then(function () { GM_setValue(DAILY_MARKER_KEY, today()); }); },
     mockAC: function () {
       return recordSubmission(problemKey());
-    }
+    },
+    // 日志是攒批发的，排查时想立刻要结果就用这两个：flushLog 立即发送，dumpLog 顺带打回控制台。
+    flushLog: flushTrace,
+    dumpLog: function () { flushTrace(); console.log(traceRing.join('\n')); return traceRing.slice(); }
   };
   // Tampermonkey grants run in an isolated sandbox; expose the helper to the page console too.
   window.syncHelper = helper;
@@ -504,10 +729,24 @@
 
   var observer = new MutationObserver(function () { clearTimeout(observer.timer); observer.timer = setTimeout(scan, 350); });
   window.addEventListener('message', function (event) {
-    if ((event.source !== pageWindow && event.source !== window) || !event.data || event.data.source !== 'codeagenda-probe' || event.data.type !== 'accepted') return;
-    lastProbeSignal = event.data.signal || 'accepted';
-    log('网络探针检测到牛客通过响应:', event.data.signal || '(success)');
-    syncAccepted('network:' + (event.data.signal || 'accepted'));
+    if ((event.source !== pageWindow && event.source !== window) || !event.data || event.data.source !== 'codeagenda-probe') return;
+    var data = event.data;
+    if (data.type !== 'accepted' && data.type !== 'rejected') return;
+    // 探针报的是整条响应，本脚本完全不知道它对应哪道题、哪次提交：接口地址和片段必须留痕。
+    var fields = {
+      关键词: data.keyword,
+      接口: clip(data.url, 200),
+      响应片段: clip(data.snippet, 300),
+      距点击: sinceClick()
+    };
+    if (data.type === 'rejected') {
+      trace('接口探针否决（响应含通过字样但也有失败/评测中迹象）', fields);
+      return;
+    }
+    lastProbeSignal = data.keyword || 'accepted';
+    log('网络探针检测到牛客通过响应:', lastProbeSignal);
+    trace('接口探针命中通过', fields);
+    syncAccepted('network:' + (data.keyword || 'accepted'), '接口探针');
   });
   // 只有"提交"按钮才算一次判题。牛客的"运行/自测"按钮跑完样例后，结果面板同样会冒出
   // "答案正确"，但那只是样例跑通、不是本题判通过；把它当成一次提交，就会出现
@@ -518,13 +757,19 @@
 
   // 从点击处向上找几层，判断这次点击是不是"提交"。牛客部分版本用 div/span 当按钮，所以
   // 类名和文本都要看；碰到运行、自测、提交记录这类控件一律不算。
-  function clickedSubmitControl(element) {
+  // walk 收集沿途每一层命中的判定，供日志还原"这次点击为什么算/不算提交"。
+  function clickedSubmitControl(element, walk) {
     for (var level = 0; element && level < 8; level += 1, element = element.parentElement) {
       var cls = element.className && typeof element.className === 'string' ? element.className : '';
       var label = textOf(element);
       if (label.length > 80) label = '';
-      if (NOT_SUBMIT_RE.test(cls) || NOT_SUBMIT_RE.test(label)) return null;
-      if (SUBMIT_CLASS_RE.test(cls) || SUBMIT_TEXT_RE.test(label)) return element;
+      var notSubmit = NOT_SUBMIT_RE.test(cls) || NOT_SUBMIT_RE.test(label);
+      var isSubmit = SUBMIT_CLASS_RE.test(cls) || SUBMIT_TEXT_RE.test(label);
+      if (notSubmit || isSubmit) {
+        if (walk) walk.push('第' + level + '层' + nodeInfo(element) + (notSubmit ? '→不算提交' : '→算提交'));
+      }
+      if (notSubmit) return null;
+      if (isSubmit) return element;
     }
     return null;
   }
@@ -535,16 +780,25 @@
     // 先监听动态结果，再在 2.5 秒后做首次扫描；首次扫描只建立 AC 提示基线。
     observer.observe(document.body, { subtree: true, childList: true, characterData: true });
     acReady = true;
+    trace('脚本启动', { 版本: SCRIPT_VERSION, 页面: location.href, 题目: problemKey() });
     document.addEventListener('click', function (event) {
-      var control = clickedSubmitControl(event.target);
+      var walk = [];
+      var control = clickedSubmitControl(event.target, walk);
+      // 只有这条点击链路上出现过"提交/运行/自测"字样的才值得记，否则点页面任意处都会留一行。
+      if (walk.length) {
+        trace(control ? '点击判定：算提交' : '点击判定：不算提交', {
+          点击目标: nodeInfo(event.target),
+          逐层判定: walk.join(' | ')
+        });
+      }
       if (!control) return;
       debug('检测到提交操作，等待判题结果:', textOf(control).slice(0, 120));
-      beginAttempt();
+      beginAttempt('点击提交控件');
     }, true);
     document.addEventListener('keydown', function (event) {
       if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
         debug('检测到 Ctrl/Cmd+Enter 提交操作，等待判题结果');
-        beginAttempt();
+        beginAttempt('Ctrl/Cmd+Enter');
       }
     }, true);
     setTimeout(function () {
@@ -553,5 +807,15 @@
     }, 2500);
   }
   installNetworkProbe();
+  // 离开页面（关标签/跳转）前把还攒着的日志发出去，否则最后几条判定链路会随页面一起没。
+  window.addEventListener('pagehide', function () {
+    trace('页面卸载', { 距点击: sinceClick(), 仍处武装状态: submissionArmed ? '是' : '否' });
+    flushTrace();
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState !== 'hidden') return;
+    trace('页面切到后台', { 距点击: sinceClick(), 仍处武装状态: submissionArmed ? '是' : '否' });
+    flushTrace();
+  });
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
 })();

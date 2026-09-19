@@ -43,6 +43,13 @@ logging.getLogger('werkzeug').setLevel(logging.WARNING)
 # 失败（>=400）仍然记录，因为那正是需要排查的情况。
 POLLING_PATHS = frozenset(('/api/records', '/api/summary', '/api/submissions'))
 
+# 油猴脚本上报判定链路日志的接口。它自己的每行内容都要进日志，请求行再来一行纯属重复。
+SILENT_PATHS = frozenset(('/api/client-log',))
+
+# 单次上报最多接收的事件条数与单条日志最大长度：脚本一旦失控刷屏，日志窗口会先于磁盘撑不住。
+CLIENT_LOG_MAX_EVENTS = 200
+CLIENT_LOG_MAX_CHARS = 800
+
 app = Flask(__name__)
 
 
@@ -53,9 +60,11 @@ def mark_request_start():
 
 @app.after_request
 def log_request_summary(response):
-    """记录每个请求的方法、路径、状态码与耗时；轮询类 GET 成功时跳过。"""
+    """记录每个请求的方法、路径、状态码与耗时；轮询类 GET 与脚本日志上报不记。"""
     started = g.pop('request_started', None)
     elapsed_ms = (time.perf_counter() - started) * 1000 if started is not None else -1.0
+    if request.path in SILENT_PATHS:
+        return response
     if request.method == 'GET' and request.path in POLLING_PATHS and response.status_code < 400:
         return response
     query = request.query_string.decode('utf-8', 'replace')
@@ -514,6 +523,27 @@ def delete_submission(submission_id):
     else:
         record = sync_record_from_details(row['date'], force=True, include_empty=True)
     return jsonify({'deleted': True, 'record': record})
+
+
+@app.route('/api/client-log', methods=['POST'])
+def save_client_log():
+    """接收油猴脚本的判定链路日志，逐行写进运行日志（托盘日志窗口 / 导出的 runtime.log）。
+
+    脚本只负责生成带序号和偏移量的单行文本，格式与筛选都在它那边；这里不做解析，
+    原样落盘即可——判题误报的现场在脚本内部，后端越少加工越好还原。"""
+    body = request.get_json(silent=True)
+    events = body.get('events') if isinstance(body, dict) else None
+    if not isinstance(events, list):
+        log.warning('脚本日志被拒：events 不是数组 (%r)', body)
+        return jsonify({'error': 'events 必须是数组'}), 400
+    saved = 0
+    for event in events[:CLIENT_LOG_MAX_EVENTS]:
+        line = event.get('line') if isinstance(event, dict) else None
+        if not isinstance(line, str) or not line.strip():
+            continue
+        log.info('[脚本] %s', line.strip()[:CLIENT_LOG_MAX_CHARS])
+        saved += 1
+    return jsonify({'saved': saved})
 
 
 @app.route('/api/daily-problems', methods=['POST'])

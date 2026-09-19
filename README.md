@@ -59,11 +59,13 @@ python app.py
 
 - 识别「每日一题」的已完成状态，并同步当天 `is_daily=1`；
 - 识别提交结果中的「答案正确 / Accepted / AC」等成功提示，把当天通过的题目写入明细；
-- 只有检测到本次点击“提交/运行”或按下 `Ctrl/Cmd+Enter` 后的成功结果才会计数，页面中原有的历史 Accepted 提示不会自动计数；
+- 只有本次点击「提交」或按下 `Ctrl/Cmd+Enter` 后的成功结果才会计数；点「运行/自测」跑通样例不算通过，页面中原有的历史 Accepted 提示也不会自动计数；
 - 每次写入前先读取 `/api/records` 并合并字段，不覆盖另一项记录；
 - 每道提交题目是否已经计数完全以 CodeAgenda 本地 `submissions` 数据库为准；同一道题当天重复提交不会重复计数，而以前在牛客做过、但数据库中没有的题目，首次在系统运行期间提交通过时会正常计数。
 
 主页面每 5 秒轮询一次后端，所以牛客那边同步成功后，回到页面即会自动显示最新题目。
+
+脚本会把每次「点击 → 等待判题 → 记账」的判定链路自动上报到 `/api/client-log`，逐行出现在日志窗口里（形如 `#7 +15ms 判定通过并记账 来源=接口探针 信号=network:答案正确 题目=… 距点击=1ms`）：点击算不算提交、基线里有没有留下通过提示、判题提示什么时候变的、哪条接口响应被探针当成通过、记账请求的结果，都在里面。**万一出现「没通过却被记成通过」，导出日志后按序号和 `+Nms` 就能还原当时是哪一步判错的。** 排查时可在控制台执行 `window.syncHelper.flushLog()` 立即发送攒着的日志，或 `dumpLog()` 直接打印出来。
 
 打开浏览器控制台可查看 `[CodeAgenda]` 日志。脚本默认开启调试日志：执行 `window.syncHelper.debugDaily()` 会打印每日一题候选元素及最终判断，执行 `window.syncHelper.debugAC()` 会打印 AC 候选文本；执行 `window.syncHelper.setDebug(false)` 可关闭调试日志。`mockDaily()`、`mockAC()` 和 `scan()` 可用于手动测试同步。如果牛客改版导致识别不到状态，优先根据候选日志调整用户脚本中的 `isDailyComplete()` 和 `acSignal()` 文本匹配规则。
 
@@ -83,7 +85,7 @@ PORT=5001 python app.py
   - `data/records.db`——每天的汇总记录（题数、是否完成每日一题）与设置（牛客账号、背景图片路径）；
   - `data/details.db`——每道通过题目的明细、以及每天的每日一题题名与链接。
 - 日志默认只存在内存里、显示在日志窗口，不落盘；点「导出日志」才会在项目根目录创建 `log/` 并写入 `log/runtime.log`（每次覆盖）。
-- 日志里每行都带时间戳：后端行形如 `20:14:03 [INFO] ...`（警告与错误会升级成 `[WARNING]`），托盘的诊断行形如 `20:14:03 [托盘] ...`。
+- 日志里每行都带时间戳：后端行形如 `20:14:03 [INFO] ...`（警告与错误会升级成 `[WARNING]`），托盘的诊断行形如 `20:14:03 [托盘] ...`，用户脚本上报的判定链路行形如 `20:14:03 [INFO] [脚本] #7 +15ms ...`。
 - 变更类请求（POST / DELETE）和所有失败请求都会记录方法、路径、状态码与耗时；主页面每 5 秒的轮询 GET 成功时不记，避免把有用的行刷掉。记录数据的变化会写明「为什么」，例如是「按题目明细重算」还是「保留手动记录」。
 - 牛客账号的密码**不会**写进日志（只记账号与密码是否为空），可以放心导出日志排查问题。
 - `data/*.db`、`static/backgrounds/*`、`log/`、`.codeagenda.lock` 均已被 `.gitignore` 排除，**不会**被提交到 GitHub——即使公开仓库，你的刷题记录也不会泄露。
@@ -126,6 +128,8 @@ PORT=5001 python app.py
 ├── CodeAgenda.vbs            # 用 pythonw.exe 无窗口拉起 tray.py
 ├── requirements.txt          # Python 依赖（Flask + PyQt6）
 ├── nowcoder_sync.user.js     # Tampermonkey 用户脚本（牛客页面自动同步）
+├── debugScript/
+│   └── drive-userscript.js   # 判定链路回归测试：假 DOM 驱动上面的用户脚本（node 直接运行）
 ├── templates/
 │   └── index.html            # 页面结构（统计卡 / 快捷栏 / 热力图 / 弹窗 / 设置面板）
 ├── static/
@@ -150,6 +154,7 @@ PORT=5001 python app.py
 | GET | `/api/submissions` | 读取已通过题目（可带 `?date=YYYY-MM-DD` 只看某天） |
 | POST | `/api/submissions` | 记录当天一道已通过题目（按题目链接的主机 + 路径幂等去重） |
 | DELETE | `/api/submissions/<id>` | 删除一条已通过题目，并重算当天记录 |
+| POST | `/api/client-log` | 接收用户脚本上报的判定链路日志，写进运行日志（不判题、不改数据） |
 | GET/POST | `/api/daily-problems` | 读取或保存当天的每日一题（题名与链接） |
 | GET | `/api/summary` | 统计汇总（累计 / 单日最高 / 连登天数） |
 | GET | `/api/export` | 导出全部记录为 JSON |
