@@ -125,8 +125,8 @@ var MIN_YEAR = 2000; // 往回翻页的下限：没有数据也可翻到空白�
 var HEATMAP_DAILY_COL = '#2da44e'; // 每日一题足迹：已完成当天的绿色
 
 var heatmapPages = [
-  { gridId: 'heatmap', hintId: 'heatmap-hint', prevId: 'btn-prev', nextId: 'btn-next', yearId: 'heatmap-year', mode: 'count' },
-  { gridId: 'heatmap-daily', hintId: 'heatmap-hint-d', prevId: 'btn-prev-d', nextId: 'btn-next-d', yearId: 'heatmap-year-d', mode: 'daily' }
+  { gridId: 'heatmap', prevId: 'btn-prev', nextId: 'btn-next', yearId: 'heatmap-year', mode: 'count' },
+  { gridId: 'heatmap-daily', prevId: 'btn-prev-d', nextId: 'btn-next-d', yearId: 'heatmap-year-d', mode: 'daily' }
 ];
 
 function yearRange() {
@@ -158,7 +158,6 @@ function makeDayCell(extra) {
 function renderHeatmapGrid(p) {
   var grid = document.getElementById(p.gridId);
   grid.textContent = '';
-  var hasDataOnPage = false;
 
   for (var m = 0; m < 12; m++) {
     var wrap = document.createElement('div');
@@ -193,11 +192,9 @@ function renderHeatmapGrid(p) {
       var color, title;
       if (p.mode === 'daily') {
         var done = !!(rec && rec.is_daily === 1);
-        if (done) hasDataOnPage = true;
         color = done ? HEATMAP_DAILY_COL : LEVELS[0];
         title = ds + '：' + (done ? '已完成每日一题' : '未完成每日一题');
       } else {
-        if (rec) hasDataOnPage = true;
         color = rec ? colorFor(rec.count) : LEVELS[0];
         title = rec ? (ds + '：' + rec.count + ' 题') : (ds + '：无记录');
       }
@@ -217,8 +214,6 @@ function renderHeatmapGrid(p) {
     wrap.appendChild(b);
     grid.appendChild(wrap);
   }
-
-  document.getElementById(p.hintId).hidden = hasDataOnPage;
 }
 
 function renderHeatmaps() {
