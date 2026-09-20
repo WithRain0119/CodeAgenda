@@ -56,18 +56,28 @@ const { El, all } = makeDom();
 
 const body = El('body', '', '');
 const heading = El('h1', '', 'HIGH19 好多次方');
+// 真实的难度元素：<span class="difficulty-level mr-3 level_1">入门</span>
+const difficultyEl = El('span', 'difficulty-level mr-3 level_1', '入门');
 const submitBtn = El('div', 'btn-submit', '提交');
 const runBtn = El('div', 'btn-run', '自测运行');
 const panel = El('div', 'result-panel', '', [submitBtn, runBtn]);
-body.appendChild(El('div', 'question', '', [heading, panel]));
+body.appendChild(El('div', 'question', '', [heading, difficultyEl, panel]));
 
 const listeners = { click: [], keydown: [], message: [], pagehide: [], visibilitychange: [] };
+let difficultyNode = difficultyEl;    // 置 null = 页面上没有难度元素
+let difficultyQueryThrows = false;    // 置 true  = 查难度元素时抛错
 const documentStub = {
   body, documentElement: El('html'), head: El('head'), readyState: 'complete',
   title: 'HIGH19 好多次方_牛客网', visibilityState: 'visible',
   createElement: (t) => El(t),
   addEventListener: (t, fn) => { (listeners[t] = listeners[t] || []).push(fn); },
-  querySelector: (sel) => (sel.indexOf('h1') === 0 ? heading : null),
+  querySelector: (sel) => {
+    if (sel === '.difficulty-level') {
+      if (difficultyQueryThrows) throw new Error('boom');
+      return difficultyNode;
+    }
+    return sel.indexOf('h1') === 0 ? heading : null;
+  },
   querySelectorAll: (sel) => (sel === 'body *' ? all.filter((e) => e !== body) : []),
 };
 const windowStub = {
@@ -159,6 +169,13 @@ const probe = (keyword, url) => listeners.message.forEach((fn) => fn({
   },
 }));
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+// 记账请求的请求体（takeTraces 会清空 httpCalls，要在它之前取）
+const subBodies = () => httpCalls.filter((c) => c.path === '/api/submissions').map((c) => JSON.parse(c.body));
+// 换掉元素里的文本节点（El 的 text 塞的是 childNodes 里的文本节点，不是 raw）
+const setText = (el, text) => {
+  el.childNodes = el.childNodes.filter((n) => n.nodeType !== 3);
+  el.childNodes.push({ nodeType: 3, nodeValue: text });
+};
 
 let failures = 0;
 function check(label, ok, detail) {
@@ -228,6 +245,67 @@ function check(label, ok, detail) {
   await wait(60);
   const recovered = httpCalls.filter((c) => c.path === '/api/client-log' && c.body.indexOf('判定通过并记账') >= 0);
   check('后端恢复后补发成功', recovered.length > 0, recovered.length ? '日志没丢' : '日志丢了');
+
+  console.log('\n场景七：通过时把难度一起上报（页面渲染出 <span class="difficulty-level level_1">入门</span>）');
+  clockOffset += 6000; reset();
+  click(submitBtn);
+  probe('答案正确');
+  await wait(60);
+  const bodies7 = subBodies();
+  const trace7 = takeTraces();
+  console.log(trace7.filter((l) => /判定通过并记账/.test(l)).join('\n'));
+  check('通过记了一条', subs === 1, '上报 ' + subs + ' 次');
+  check('请求体带上了难度', bodies7.length === 1 && bodies7[0].difficulty === '入门',
+    'difficulty=' + JSON.stringify(bodies7[0] && bodies7[0].difficulty));
+  check('日志里也带上了难度', /难度=入门/.test(trace7.join('\n')));
+  // 调试用：脚本日志里的链路 id 要和后端收到的是同一个，否则两边对不上账
+  const link7 = (trace7.join('\n').match(/链路=(\S+)/) || [])[1];
+  check('日志带上了链路 id', !!link7, link7);
+  check('请求体带的是同一个链路 id', bodies7[0] && bodies7[0].attempt_id === link7,
+    bodies7[0] && bodies7[0].attempt_id);
+  check('日志标出了难度来源', /难度来源=页面文字/.test(trace7.join('\n')));
+
+  console.log('\n场景八：难度文字没渲染出来时，用 class 里的档位数字兜底');
+  setText(difficultyEl, '');
+  difficultyEl.className = 'difficulty-level level_3';
+  clockOffset += 6000; reset();
+  click(submitBtn);
+  probe('答案正确');
+  await wait(60);
+  const bodies8 = subBodies();
+  const trace8 = takeTraces();
+  check('兜底读出了「中等」', bodies8.length === 1 && bodies8[0].difficulty === '中等',
+    'difficulty=' + JSON.stringify(bodies8[0] && bodies8[0].difficulty));
+  check('日志标出来源是元素档位（便于发现牛客改了渲染方式）',
+    /难度来源=元素的 level_3 档位/.test(trace8.join('\n')));
+  setText(difficultyEl, '入门');
+  difficultyEl.className = 'difficulty-level mr-3 level_1';
+
+  console.log('\n场景九：页面上没有难度元素时，请求体不带 difficulty（后端按「难度未知」处理）');
+  difficultyNode = null;
+  clockOffset += 6000; reset();
+  click(submitBtn);
+  probe('答案正确');
+  await wait(60);
+  const bodies9 = subBodies();
+  const trace9 = takeTraces();
+  check('没有瞎填难度', bodies9.length === 1 && bodies9[0].difficulty === undefined,
+    'difficulty=' + JSON.stringify(bodies9[0] && bodies9[0].difficulty));
+  check('抓不到难度时留下了诊断现场', /难度抓取诊断 .*选择器=未命中/.test(trace9.join('\n')),
+    (trace9.filter((l) => /难度抓取诊断/.test(l))[0] || '(没有诊断行)').slice(0, 80));
+  difficultyNode = difficultyEl;
+
+  console.log('\n场景十：抓难度时抛异常，记账不能受影响');
+  difficultyQueryThrows = true;
+  clockOffset += 6000; reset();
+  click(submitBtn);
+  probe('答案正确');
+  await wait(60);
+  const trace10 = takeTraces();
+  check('仍然记了一条', subs === 1, '上报 ' + subs + ' 次');
+  check('日志记下了抓取是抛错而非没找到', /难度来源=抓取抛错：boom/.test(trace10.join('\n')),
+    (trace10.filter((l) => /难度来源=/.test(l))[0] || '').slice(0, 90));
+  difficultyQueryThrows = false;
 
   console.log('\n' + (failures ? '有 ' + failures + ' 项不符合预期' : '全部场景符合记录的行为'));
   process.exit(failures ? 1 : 0);

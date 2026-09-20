@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         CodeAgenda - 牛客刷题同步
 // @namespace    codeagenda.local
-// @version      1.6.0
+// @version      1.7.0
 // @description  自动同步牛客每日一题和 Accepted 提交到本地 CodeAgenda
 // @match        https://www.nowcoder.com/*
 // @grant        GM_xmlhttpRequest
@@ -60,7 +60,7 @@
   // 在点击之后多少毫秒把它判成了通过。所以只记录判定链路（点击归属、判题提示变化、
   // 探针命中与否决、记账请求与结果），不记录每 150ms 的轮询和每次 DOM 扫描，免得刷爆日志窗口。
   // 日志经 /api/client-log 落到后端 stdout，也就是托盘日志窗口和导出的 log/runtime.log。
-  var SCRIPT_VERSION = '1.6.0';
+  var SCRIPT_VERSION = '1.7.0';
   var TRACE_PATH = '/api/client-log';
   var TRACE_FLUSH_MS = 1500;   // 攒够时间就发，避免一次判题拆成几十个请求
   var TRACE_BATCH_MAX = 20;
@@ -390,6 +390,13 @@
   var attemptStartedAt = 0;
   var attemptUrl = '';
   var lastSignalNote = '';
+  var attemptId = '';   // 一次"点击提交 → 记账"的链路 id，脚本日志和后端日志都带着它，两边好对账
+  var attemptSeq = 0;
+
+  // 链路 id 在每个页面会话内递增，另加随机后缀：跨页面刷新也不会撞车。
+  function newAttemptId() {
+    return 'k' + (++attemptSeq).toString(36) + '-' + Math.floor(Math.random() * 1296).toString(36);
+  }
 
   function baselined(item) {
     return !!attemptBaseline && attemptBaseline.get(item.node) === item.text;
@@ -404,6 +411,7 @@
     lastSignalNote = '';
     attemptStartedAt = Date.now();
     attemptUrl = location.href;
+    attemptId = newAttemptId();
     var current = scanSignals();
     var items = current.pass.concat(current.fail, current.pending);
     for (var i = 0; i < items.length; i += 1) attemptBaseline.set(items[i].node, items[i].text);
@@ -486,8 +494,75 @@
     return location.host + path + (title ? '|' + title : '');
   }
 
-  function recordSubmission(problem) {
-    return request('POST', '/api/submissions', { date: today(), problem_key: problem });
+  /* ===== 题目难度抓取（独立于判题链路：只读 DOM，抓不到就返回空串） ===== */
+
+  // 难度那一行渲染出来长这样（牛客是 Vue 渲染的，静态 HTML 里没有，必须在渲染后读）：
+  //   <span class="difficulty-level mr-3 level_1">入门</span>
+  var DIFFICULTY_SELECTOR = '.difficulty-level';
+  // 兜底映射：题目页会把档位挂在 window.pageInfo.difficulty_var 上，编号与 class 的 level_N 同源。
+  var DIFFICULTY_BY_LEVEL = { 1: '入门', 2: '简单', 3: '中等', 4: '较难', 5: '困难' };
+  var DIFFICULTY_MAX_LEN = 16; // 真实难度就两个字；读到一长串说明选中的不是难度
+  var lastDifficultySource = ''; // 上一次抓到难度的来源，只用于日志
+
+  function difficultyLevelOf(element) {
+    var match = /(?:^|\s)level_(\d+)(?:\s|$)/.exec(element.className || '');
+    return match ? parseInt(match[1], 10) : 0;
+  }
+
+  // 读出本题难度。优先用页面上渲染出来的文字（就是用户在页面上看到的那两个字），
+  // 文字取不到时退回档位数字。任何异常都吞掉：抓难度失败绝不能让记账失败。
+  function extractDifficulty() {
+    lastDifficultySource = '';
+    try {
+      var node = document.querySelector(DIFFICULTY_SELECTOR);
+      if (node) {
+        var text = normalizeSignal(textOf(node));
+        if (text && text.length <= DIFFICULTY_MAX_LEN) {
+          lastDifficultySource = '页面文字';
+          return text;
+        }
+        var byLevel = DIFFICULTY_BY_LEVEL[difficultyLevelOf(node)];
+        if (byLevel) {
+          lastDifficultySource = '元素的 level_' + difficultyLevelOf(node) + ' 档位';
+          return byLevel;
+        }
+      }
+      var info = pageWindow.pageInfo;
+      var fallback = info && DIFFICULTY_BY_LEVEL[parseInt(info.difficulty_var, 10)];
+      if (fallback) {
+        lastDifficultySource = 'pageInfo.difficulty_var';
+        return fallback;
+      }
+    } catch (e) {
+      lastDifficultySource = '抓取抛错：' + clip(e.message, 40);
+      debug('抓取题目难度失败（已忽略，不影响记账）:', e);
+    }
+    return '';
+  }
+
+  // 抓不到难度时把现场记下来：是选择器没命中（牛客改版了）、元素在但文字没渲染出来，
+  // 还是页面根本没给难度。下次看到灰色「难度未知」时，翻这一行就知道该改哪里。
+  function difficultyDiagnostics() {
+    try {
+      var node = document.querySelector(DIFFICULTY_SELECTOR);
+      var info = pageWindow.pageInfo || {};
+      return {
+        选择器: node ? '命中' : '未命中',
+        元素: node ? clip((node.className || '(无 class)') + ' “' + textOf(node) + '”', 70) : '(无)',
+        页面档位: info.difficulty_var || '(无)',
+        题目标题: info.questionTitle || '(无)'
+      };
+    } catch (e) {
+      return { 诊断也失败了: clip(e.message, 60) };
+    }
+  }
+
+  function recordSubmission(problem, difficulty, linkId) {
+    // 抓不到难度就不带这个字段，请求体与旧版完全一致，后端按「难度未知」处理。
+    var body = { date: today(), problem_key: problem };
+    if (difficulty) body.difficulty = difficulty;
+    if (linkId) body.attempt_id = linkId; // 后端会把它写进日志，便于和脚本这边的链路对上
+    return request('POST', '/api/submissions', body);
   }
 
   function canonicalUrl(value) {
@@ -604,16 +679,22 @@
     lastSuccessSignal = key;
     lastSuccessAt = new Date().toLocaleTimeString();
     log('检测到代码提交成功:', key);
+    var difficulty = extractDifficulty(); // 只抓一次，trace 与上报共用同一个值
     trace('判定通过并记账', {
       来源: source,
+      链路: attemptId || '(无)',
       信号: clip(key, 80),
       题目: problemKey(),
+      难度: difficulty || '(未识别)',
+      难度来源: lastDifficultySource || '(未识别)',
       距点击: sinceClick(),
       门: lastGateInfo
     });
-    recordSubmission(problemKey()).then(function (result) {
+    if (!difficulty) trace('难度抓取诊断', difficultyDiagnostics());
+    recordSubmission(problemKey(), difficulty, attemptId).then(function (result) {
       if (result.duplicate) log('该题今天已经计数，跳过重复提交');
       trace('记账完成', {
+        链路: attemptId || '(无)',
         题目: problemKey(),
         结果: result.duplicate ? '今天已记过，未新增' : '新增一条通过记录',
         当天计数: result.record ? result.record.count : '(无)',
@@ -624,7 +705,7 @@
       return markDailyIfMatched().catch(function (error) { log('每日一题匹配失败:', error.message); return false; }).then(function () { return result; });
     }).catch(function (error) {
       // 请求失败时不留下任何"已处理"标记，后续扫描会拿同一个结果重试（见函数开头的门）。
-      trace('记账请求失败', { 题目: problemKey(), 错误: clip(error.message, 120) });
+      trace('记账请求失败', { 链路: attemptId || '(无)', 题目: problemKey(), 错误: clip(error.message, 120) });
       log('AC 同步失败:', error.message);
     }).then(function () { acSyncInFlight = false; });
   }

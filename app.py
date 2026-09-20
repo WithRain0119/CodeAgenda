@@ -68,10 +68,13 @@ def log_request_summary(response):
     if request.method == 'GET' and request.path in POLLING_PATHS and response.status_code < 400:
         return response
     query = request.query_string.decode('utf-8', 'replace')
+    # 记账请求会带上脚本的链路 id，跟到这里来，日志里就能一眼对上"哪一次点击记的这条"。
+    link = g.pop('attempt_id', '')
     log.log(
         logging.WARNING if response.status_code >= 400 else logging.INFO,
-        '%s %s%s -> %d (%.1f ms)',
+        '%s %s%s -> %d (%.1f ms)%s',
         request.method, request.path, ('?' + query) if query else '', response.status_code, elapsed_ms,
+        (' 链路=' + link) if link else '',
     )
     return response
 
@@ -117,6 +120,21 @@ def close_db(exc):
         details_db.close()
 
 
+def ensure_column(conn, table, column, ddl):
+    """给已存在的表补一列（SQLite 没有 ADD COLUMN IF NOT EXISTS）。
+
+    这是项目里第一处 schema 迁移。新库由 CREATE TABLE 直接带出该列，所以对全新库和
+    已经补过列的库都是空操作，可以重复执行。PRAGMA 不支持占位符，table/column/ddl
+    全是本文件里写死的字面量，不接受任何外部输入。
+    """
+    existing = {row[1] for row in conn.execute('PRAGMA table_info(%s)' % table)}
+    if column in existing:
+        return False
+    conn.execute('ALTER TABLE %s ADD COLUMN %s %s' % (table, column, ddl))
+    log.info('数据库迁移：%s 表补列 %s %s', table, column, ddl)
+    return True
+
+
 def init_db():
     """启动时建表，若已存在不重建。"""
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -134,7 +152,9 @@ def init_db():
             )
         ''')
         details = sqlite3.connect(DETAILS_DB_PATH)
-        details.execute('''CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, date TEXT NOT NULL, problem_key TEXT NOT NULL, created_at TEXT, UNIQUE(date, problem_key))''')
+        details.execute('''CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, date TEXT NOT NULL, problem_key TEXT NOT NULL, created_at TEXT, difficulty TEXT, UNIQUE(date, problem_key))''')
+        # 老库的 submissions 表已经存在，上面的 CREATE 是空操作，靠这里补出 difficulty 列。
+        ensure_column(details, 'submissions', 'difficulty', 'TEXT')
         details.execute('''CREATE TABLE IF NOT EXISTS daily_problems (date TEXT PRIMARY KEY, title TEXT NOT NULL, url TEXT NOT NULL, created_at TEXT, updated_at TEXT)''')
         details.commit()
         details.close()
@@ -155,9 +175,13 @@ def init_db():
             legacy_details = sqlite3.connect(LEGACY_DB_PATH)
             if 'submissions' in tables:
                 details = sqlite3.connect(DETAILS_DB_PATH)
-                details.execute('''CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, date TEXT NOT NULL, problem_key TEXT NOT NULL, created_at TEXT, UNIQUE(date, problem_key))''')
+                details.execute('''CREATE TABLE IF NOT EXISTS submissions (id TEXT PRIMARY KEY, date TEXT NOT NULL, problem_key TEXT NOT NULL, created_at TEXT, difficulty TEXT, UNIQUE(date, problem_key))''')
+                ensure_column(details, 'submissions', 'difficulty', 'TEXT')
                 details.execute('ATTACH DATABASE ? AS legacy', (LEGACY_DB_PATH,))
-                moved = details.execute('INSERT OR IGNORE INTO submissions SELECT * FROM legacy.submissions').rowcount
+                # 显式列名：旧库的 submissions 没有 difficulty 列，SELECT * 会撞上列数不匹配而报错。
+                moved = details.execute(
+                    'INSERT OR IGNORE INTO submissions (id, date, problem_key, created_at) '
+                    'SELECT id, date, problem_key, created_at FROM legacy.submissions').rowcount
                 log.info('迁移 submissions: %d 条', moved)
                 details.commit()
                 details.execute('DETACH DATABASE legacy')
@@ -216,6 +240,30 @@ def parse_is_daily(value):
             return 0
         return None
     return None
+
+
+def parse_difficulty(value):
+    """归一化上报的题目难度；缺失或非法一律 None（界面按「难度未知」显示）。
+
+    刻意不做难度名白名单：牛客改了难度叫法后端也照存，界面兜底显示灰色胶囊，
+    总比把已经抓到的信息丢掉好。
+    """
+    if not isinstance(value, str):
+        return None
+    text = re.sub(r'\s+', ' ', value.strip())
+    return text[:32] or None
+
+
+def parse_attempt_id(value):
+    """脚本为一次"点击提交 → 记账"生成的链路 id。
+
+    只用于把脚本日志（/api/client-log 里的 #N 行）和后端日志对上，不入库；
+    格式不合预期就丢弃，避免外部输入污染日志。
+    """
+    if not isinstance(value, str):
+        return ''
+    text = value.strip()
+    return text if re.match(r'^[0-9A-Za-z_-]{1,32}$', text) else ''
 
 
 def upsert_record(date_str, count, is_daily):
@@ -408,6 +456,10 @@ def save_submission():
     if not isinstance(body, dict):
         log.warning('记录通过题目被拒：请求体不是 JSON 对象 (%r)', body)
         return jsonify({'error': '请求体必须为 JSON 对象'}), 400
+    # 尽早挂到 g 上：即使后面校验失败走了 400，请求日志那一行也能带上链路 id。
+    attempt_id = parse_attempt_id(body.get('attempt_id'))
+    if attempt_id:
+        g.attempt_id = attempt_id
     date_str = validate_date(body.get('date'))
     problem_url = body.get('problem_url')
     problem_title = body.get('problem_title')
@@ -428,18 +480,27 @@ def save_submission():
         log.warning('记录通过题目被拒：date=%r problem_key=%r', body.get('date'), problem_key)
         return jsonify({'error': 'date 或 problem_key 无效'}), 400
     problem_key = problem_key.strip()[:1500]
+    # 脚本会带上从题目页抓到的难度；前端手填弹窗没有这个输入，取到 None，与旧行为一致。
+    raw_difficulty = body.get('difficulty')
+    difficulty = parse_difficulty(raw_difficulty)
+    if raw_difficulty is not None and difficulty is None:
+        # 传了但不可用：多半是脚本抓到了怪东西，记下来才知道界面上那条为什么是「难度未知」。
+        log.info('上报的难度不可用，按未知处理 date=%s 链路=%s 原值=%r',
+                 date_str, attempt_id or '(无)', raw_difficulty)
 
     db = get_details_db()
     now = now_str()
     normalized_key = problem_url_key(problem_key)
     if normalized_key:
         existing_rows = db.execute(
-            'SELECT problem_key FROM submissions WHERE date = ?', (date_str,)
+            'SELECT problem_key, created_at FROM submissions WHERE date = ?', (date_str,)
         ).fetchall()
-        if any(problem_url_key(row['problem_key']) == normalized_key for row in existing_rows):
+        matched = next((row for row in existing_rows
+                        if problem_url_key(row['problem_key']) == normalized_key), None)
+        if matched is not None:
             db.commit()
-            log.info('重复提交，忽略 date=%s 链接=%s（当天已有 %d 条明细）',
-                     date_str, normalized_key, len(existing_rows))
+            log.info('重复提交，忽略 date=%s 链路=%s 链接=%s 命中当天已有记录(创建于 %s，共 %d 条明细)',
+                     date_str, attempt_id or '(无)', normalized_key, matched['created_at'], len(existing_rows))
             if date_str == date.today().isoformat():
                 sync_today_record_from_details(force=True)
             row = get_db().execute('SELECT count, is_daily FROM records WHERE date = ?', (date_str,)).fetchone()
@@ -449,12 +510,12 @@ def save_submission():
                 'record': row_to_int_dict(row) if row else None,
             })
     cursor = db.execute(
-        'INSERT OR IGNORE INTO submissions (id, date, problem_key, created_at) VALUES (?, ?, ?, ?)',
-        (uuid.uuid4().hex, date_str, problem_key, now),
+        'INSERT OR IGNORE INTO submissions (id, date, problem_key, created_at, difficulty) VALUES (?, ?, ?, ?, ?)',
+        (uuid.uuid4().hex, date_str, problem_key, now, difficulty),
     )
     if cursor.rowcount == 0:
         db.commit()
-        log.info('重复提交（数据库唯一键冲突），忽略 date=%s key=%s', date_str, problem_key)
+        log.info('重复提交（数据库唯一键冲突），忽略 date=%s 链路=%s key=%s', date_str, attempt_id or '(无)', problem_key)
         if date_str == date.today().isoformat():
             sync_today_record_from_details(force=True)
         row = get_db().execute('SELECT count, is_daily FROM records WHERE date = ?', (date_str,)).fetchone()
@@ -465,7 +526,9 @@ def save_submission():
         })
 
     db.commit()
-    log.info('新增通过题目 date=%s 题名=%s 链接=%s', date_str, problem_key.split('|', 1)[-1], normalized_key or problem_key)
+    log.info('新增通过题目 date=%s 链路=%s 题名=%s 难度=%s 链接=%s',
+             date_str, attempt_id or '(无)', problem_key.split('|', 1)[-1],
+             difficulty or '(未识别)', normalized_key or problem_key)
     if date_str == date.today().isoformat():
         record = sync_today_record_from_details(force=True)
     else:
@@ -485,12 +548,12 @@ def list_submissions():
     db = get_details_db()
     if date_str:
         rows = db.execute(
-            'SELECT id, date, problem_key, created_at FROM submissions WHERE date = ? ORDER BY created_at ASC',
+            'SELECT id, date, problem_key, created_at, difficulty FROM submissions WHERE date = ? ORDER BY created_at ASC',
             (date_str,),
         ).fetchall()
     else:
         rows = db.execute(
-            'SELECT id, date, problem_key, created_at FROM submissions ORDER BY date ASC, created_at ASC'
+            'SELECT id, date, problem_key, created_at, difficulty FROM submissions ORDER BY date ASC, created_at ASC'
         ).fetchall()
     daily_keys = {r['date']: problem_url_key(r['url'])
                   for r in db.execute('SELECT date, url FROM daily_problems').fetchall()}
@@ -638,7 +701,7 @@ def export_records():
     db = get_db()
     rows = db.execute('SELECT * FROM records ORDER BY date ASC').fetchall()
     submissions = get_details_db().execute(
-        'SELECT date, problem_key, created_at FROM submissions ORDER BY date ASC, created_at ASC'
+        'SELECT date, problem_key, created_at, difficulty FROM submissions ORDER BY date ASC, created_at ASC'
     ).fetchall()
     daily_problems = get_details_db().execute(
         'SELECT date, title, url, created_at, updated_at FROM daily_problems ORDER BY date ASC'
@@ -702,17 +765,24 @@ def import_records():
                     updated_at = excluded.updated_at
             ''', (uuid.uuid4().hex, date_str, count, is_daily, now, now))
             n += 1
+        sub_written = 0
+        sub_invalid = 0
+        sub_total = 0
         for item in submissions if isinstance(submissions, list) else []:
             if not isinstance(item, dict):
                 continue
+            sub_total += 1
             date_str = validate_date(item.get('date'))
             problem_key = item.get('problem_key')
             if date_str is None or not isinstance(problem_key, str) or not problem_key.strip():
+                sub_invalid += 1
                 continue
-            details_db.execute(
-                'INSERT OR IGNORE INTO submissions (id, date, problem_key, created_at) VALUES (?, ?, ?, ?)',
-                (uuid.uuid4().hex, date_str, problem_key.strip()[:1500], item.get('created_at') or now),
-            )
+            sub_written += details_db.execute(
+                'INSERT OR IGNORE INTO submissions (id, date, problem_key, created_at, difficulty) VALUES (?, ?, ?, ?, ?)',
+                (uuid.uuid4().hex, date_str, problem_key.strip()[:1500],
+                 item.get('created_at') or now, parse_difficulty(item.get('difficulty'))),
+            ).rowcount
+        daily_written = 0
         for item in daily_problems if isinstance(daily_problems, list) else []:
             if not isinstance(item, dict):
                 continue
@@ -724,6 +794,7 @@ def import_records():
             details_db.execute('''INSERT INTO daily_problems (date, title, url, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
                                   ON CONFLICT(date) DO UPDATE SET title=excluded.title, url=excluded.url, updated_at=excluded.updated_at''',
                                (date_str, title.strip()[:500], url.strip()[:1000], item.get('created_at') or now, item.get('updated_at') or now))
+            daily_written += 1
         db.commit()
         details_db.commit()
         sync_today_record_from_details()
@@ -733,7 +804,10 @@ def import_records():
         log.exception('导入失败，已回滚: %s', e)
         return jsonify({'error': '导入失败: %s' % e}), 500
 
-    log.info('导入完成：写入 %d 条记录', n)
+    # 把"收了多少、写了多少、丢了多少"分开记：导入"看起来成功但数据没进来"是最难查的一类问题，
+    # 忽略重复（备份里本来就有的）和跳过无效条目是两回事，混在一个数字里看不出来。
+    log.info('导入完成：records 写入 %d/%d 条；submissions 新增 %d 条（已存在忽略 %d 条、无效跳过 %d 条）；daily_problems 写入 %d 条',
+             n, len(records), sub_written, sub_total - sub_written - sub_invalid, sub_invalid, daily_written)
     return jsonify({'imported': n})
 
 

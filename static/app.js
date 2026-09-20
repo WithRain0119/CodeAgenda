@@ -84,6 +84,7 @@ function renderPassedList() {
       tag.textContent = '每日一题';
       main.appendChild(tag);
     }
+    main.appendChild(renderDifficultyPill(item)); // 排在「每日一题」之后
     row.appendChild(time);
     row.appendChild(main);
     list.appendChild(row);
@@ -94,6 +95,40 @@ function submissionName(item) {
   var raw = String(item && item.problem_key || '');
   var split = raw.indexOf('|');
   return (split >= 0 ? raw.slice(split + 1) : raw) || '未命名题目';
+}
+
+/* ===== 题目难度胶囊（色表写死在前端；数据库只存难度文字） ===== */
+// 底色对齐牛客题目页上难度文字的颜色。没收录的难度不显示成「难度未知」，
+// 而是保留难度原文、底色用灰色兜底——抓到的信息不该丢。
+var DIFFICULTY_COLORS = {
+  '入门': '#21ce64',
+  '简单': '#26bb9c',
+  '中等': '#efc100',
+  '较难': '#ea4e07',
+  '困难': '#fb2323'
+};
+var DIFFICULTY_UNKNOWN_TEXT = '难度未知';
+var DIFFICULTY_UNKNOWN_COLOR = '#8c959f';
+
+// 亮底（「中等」那种明黄）改用深色字，其余用白字——否则字和底色糊在一起看不清。
+function pillTextColor(background) {
+  var r = parseInt(background.slice(1, 3), 16);
+  var g = parseInt(background.slice(3, 5), 16);
+  var b = parseInt(background.slice(5, 7), 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) > 160 ? '#1f2328' : '#fff';
+}
+
+// 生成一条记录的难度胶囊。老记录、以及记录时没抓到难度的，都显示灰色「难度未知」。
+function renderDifficultyPill(item) {
+  var name = String((item && item.difficulty) || '').trim();
+  var color = DIFFICULTY_COLORS[name] || DIFFICULTY_UNKNOWN_COLOR;
+  var pill = document.createElement('span');
+  pill.className = 'passed-difficulty-pill';
+  pill.textContent = name || DIFFICULTY_UNKNOWN_TEXT;
+  pill.style.background = color;
+  pill.style.color = pillTextColor(color);
+  if (!name) pill.title = '记录时没能从题目页读到难度';
+  return pill;
 }
 
 function renderDeleteSubmissionList() {

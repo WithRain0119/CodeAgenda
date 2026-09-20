@@ -173,6 +173,17 @@ h1.page-title {
   font-size: 11px;
   line-height: 16px;
 }
+/* 难度胶囊：形状/尺寸在这里，底色由 app.js 的 DIFFICULTY_COLORS 内联决定 */
+.passed-difficulty-pill {
+  flex: none;              /* 必须：标题 a 上有 ellipsis，不写会被长标题压扁 */
+  padding: 1px 6px;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;       /* 与 .passed-daily-tag 同高，不撑高固定 156px 的列表 */
+  white-space: nowrap;
+}
+
 .passed-empty { color: #57606a; font-size: 13px; text-align: center; margin: 0; align-self: center; }
 
 .legend {
