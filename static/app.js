@@ -122,7 +122,7 @@ function renderDeleteSubmissionList() {
 
 /* ===== 年份翻页 ===== */
 var MIN_YEAR = 2000; // 往回翻页的下限：没有数据也可翻到空白年份补记；有更早记录则以记录年份为准
-var HEATMAP_DAILY_COL = '#2da44e'; // 每日一题足迹：已完成当天的绿色
+var HEATMAP_DAILY_COL = '#2da44e'; // 每日一热力图：已完成当天的绿色
 
 var heatmapPages = [
   { gridId: 'heatmap', prevId: 'btn-prev', nextId: 'btn-next', yearId: 'heatmap-year', mode: 'count' },

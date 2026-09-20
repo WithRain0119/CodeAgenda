@@ -22,21 +22,24 @@ h1.page-title {
   margin: 0;
 }
 
+/* 标题居中：左右两列等宽（1fr），标题占中间那列，因此相对整个页面居中，
+   而不是被右侧的「设置」按钮挤偏 */
 .topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
 }
 
 .topbar-title {
+  grid-column: 2;
   display: flex;
   align-items: baseline;
   gap: 12px;
   min-width: 0;
 }
 
-#btn-settings { font-size: 13px; padding: 5px 12px; }
+#btn-settings { grid-column: 3; justify-self: end; font-size: 13px; padding: 5px 12px; }
 
 /* ---------- 三张统计卡 ---------- */
 .stats {
@@ -205,10 +208,11 @@ h1.page-title {
   margin: 0 auto;
 }
 
-/* 年份翻页条（年份显示在热力图左上角） */
+/* 年份翻页条（年份居中显示在热力图上方） */
 .heatmap-pager {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   margin-bottom: 12px;
 }

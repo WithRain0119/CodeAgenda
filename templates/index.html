@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>牛客刷题日程</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/style.css?v=20260909-selected-date-marker-v7">
+  <link rel="stylesheet" href="/static/style.css?v=20260920-topbar-title-center-v9">
 </head>
 <body>
   <div class="page">
@@ -52,7 +52,7 @@
 
     <section class="card heatmap-card">
       <div class="card-header">
-        <h2>刷题足迹</h2>
+        <h2>刷题热力图</h2>
         <ul class="legend">
           <li><i class="dot" style="background:#9be9a8"></i>少</li>
           <li><i class="dot" style="background:#40c463"></i>中</li>
@@ -60,13 +60,13 @@
           <li><i class="dot" style="background:#216e39"></i>多更多</li>
         </ul>
       </div>
+      <div class="heatmap-pager">
+        <button id="btn-prev" class="pager-btn" type="button" title="上一年">‹</button>
+        <span class="pager-year" id="heatmap-year">--</span>
+        <button id="btn-next" class="pager-btn" type="button" title="下一年">›</button>
+      </div>
       <div class="heatmap-scroll">
         <div class="heatmap-inner">
-          <div class="heatmap-pager">
-            <button id="btn-prev" class="pager-btn" type="button" title="上一年">‹</button>
-            <span class="pager-year" id="heatmap-year">--</span>
-            <button id="btn-next" class="pager-btn" type="button" title="下一年">›</button>
-          </div>
           <div id="heatmap"></div>
         </div>
       </div>
@@ -85,19 +85,19 @@
 
     <section class="card heatmap-card">
       <div class="card-header">
-        <h2>每日一题足迹</h2>
+        <h2>每日一题热力图</h2>
         <ul class="legend">
           <li><i class="dot" style="background:#2da44e"></i>已完成</li>
           <li><i class="dot" style="background:#ebedf0"></i>未完成</li>
         </ul>
       </div>
+      <div class="heatmap-pager">
+        <button id="btn-prev-d" class="pager-btn" type="button" title="上一年">‹</button>
+        <span class="pager-year" id="heatmap-year-d">--</span>
+        <button id="btn-next-d" class="pager-btn" type="button" title="下一年">›</button>
+      </div>
       <div class="heatmap-scroll">
         <div class="heatmap-inner">
-          <div class="heatmap-pager">
-            <button id="btn-prev-d" class="pager-btn" type="button" title="上一年">‹</button>
-            <span class="pager-year" id="heatmap-year-d">--</span>
-            <button id="btn-next-d" class="pager-btn" type="button" title="下一年">›</button>
-          </div>
           <div id="heatmap-daily"></div>
         </div>
       </div>

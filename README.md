@@ -9,8 +9,8 @@
 - **已通过题目列表**：列出所选日期当天通过的每道题——提交时间、题名（可点击跳转）以及是否就是当天的「每日一题」。
 - **统计卡**：累计刷题、单日最高（含日期）、每日一题连续打卡天数、连续刷题天数。
 - **两套热力图**：
-  - 「刷题足迹」——按当天刷题数量分档上色（浅灰 → 四档绿）；
-  - 「每日一题足迹」——当天是否完成每日一题。
+  - 「刷题热力图」——按当天刷题数量分档上色（浅灰 → 四档绿）；
+  - 「每日一题热力图」——当天是否完成每日一题。
 - **按年分页、可补记**：每年一页，1 月至 12 月从左到右；每月是一块 7 列小日历（列对应周一..周日）。可翻回往年任意一天补记（最早 2000 年），未来日期灰显不可点。
 - **悬停提示 / 点击选中**：鼠标悬停方块显示日期与题数；点击方块把该天设为当前操作日期，快捷栏、已通过题目列表随之切换。
 - **导出 / 导入**：一键把全部记录导出为 JSON 备份，或从备份恢复（换机 / 迁移用）。
@@ -146,23 +146,24 @@ PORT=5001 python app.py
 
 ## 接口一览
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/` | 页面 |
-| GET | `/api/records` | 读取全部记录 |
-| POST | `/api/records` | 保存某天记录（count=0 且 is_daily=0 时删除该天） |
-| GET | `/api/submissions` | 读取已通过题目（可带 `?date=YYYY-MM-DD` 只看某天） |
-| POST | `/api/submissions` | 记录当天一道已通过题目（按题目链接的主机 + 路径幂等去重） |
-| DELETE | `/api/submissions/<id>` | 删除一条已通过题目，并重算当天记录 |
-| POST | `/api/client-log` | 接收用户脚本上报的判定链路日志，写进运行日志（不判题、不改数据） |
-| GET/POST | `/api/daily-problems` | 读取或保存当天的每日一题（题名与链接） |
-| GET | `/api/summary` | 统计汇总（累计 / 单日最高 / 连登天数） |
-| GET | `/api/export` | 导出全部记录为 JSON |
-| POST | `/api/import` | 导入 JSON 备份 |
-| GET | `/api/settings` | 读取设置（牛客账号、外观） |
-| POST | `/api/settings/nowcoder` | 保存牛客账号密码（仅本地） |
-| POST | `/api/background` | 上传背景图片 |
-| DELETE | `/api/background` | 清除背景图片 |
+
+| 方法     | 路径                     | 说明                                                             |
+| -------- | ------------------------ | ---------------------------------------------------------------- |
+| GET      | `/`                      | 页面                                                             |
+| GET      | `/api/records`           | 读取全部记录                                                     |
+| POST     | `/api/records`           | 保存某天记录（count=0 且 is_daily=0 时删除该天）                 |
+| GET      | `/api/submissions`       | 读取已通过题目（可带`?date=YYYY-MM-DD` 只看某天）                |
+| POST     | `/api/submissions`       | 记录当天一道已通过题目（按题目链接的主机 + 路径幂等去重）        |
+| DELETE   | `/api/submissions/<id>`  | 删除一条已通过题目，并重算当天记录                               |
+| POST     | `/api/client-log`        | 接收用户脚本上报的判定链路日志，写进运行日志（不判题、不改数据） |
+| GET/POST | `/api/daily-problems`    | 读取或保存当天的每日一题（题名与链接）                           |
+| GET      | `/api/summary`           | 统计汇总（累计 / 单日最高 / 连登天数）                           |
+| GET      | `/api/export`            | 导出全部记录为 JSON                                              |
+| POST     | `/api/import`            | 导入 JSON 备份                                                   |
+| GET      | `/api/settings`          | 读取设置（牛客账号、外观）                                       |
+| POST     | `/api/settings/nowcoder` | 保存牛客账号密码（仅本地）                                       |
+| POST     | `/api/background`        | 上传背景图片                                                     |
+| DELETE   | `/api/background`        | 清除背景图片                                                     |
 
 ## FAQ
 
